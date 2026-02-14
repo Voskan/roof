@@ -27,7 +27,8 @@ fi
 
 # Note: openxlab login might be required interactively if not already logged in
 echo "Downloading OmniCity to ${RAW_OMNICITY}..."
-openxlab dataset download --dataset-id OpenDataLab/OmniCity --target-path "${RAW_OMNICITY}"
+# Using corrected flags: -r for repo and -s / for entire directory
+openxlab dataset download --dataset-repo OpenDataLab/OmniCity --source-path / --target-path "${RAW_OMNICITY}"
 
 # Trigger OmniCity Processing (TIF/Mask -> RGB/Normal)
 echo "Processing OmniCity..."

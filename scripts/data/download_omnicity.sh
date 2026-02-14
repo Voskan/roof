@@ -19,7 +19,8 @@ echo "Downloading OmniCity to ${TARGET_DIR}..."
 mkdir -p "${TARGET_DIR}"
 
 openxlab dataset download \
-    --dataset-id "${DATASET_ID}" \
+    --dataset-repo "${DATASET_ID}" \
+    --source-path / \
     --target-path "${TARGET_DIR}"
 
 echo "OmniCity download complete."

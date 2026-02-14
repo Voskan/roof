@@ -57,7 +57,22 @@ The system resolves tile boundary overlaps using a modified NMS algorithm that o
 ### Domain Adaptation Strategy
 When training on Building3D or OmniCity, the pipeline implements:
 - **Sobel Normal Extraction**: Converting height maps to unit-norm surface vectors.
-- **Painter's Algorithm Rasterization**: For Building3D OBJs, ensure occlusion-aware rendering.
+- **RoofN3D Rendering Pipeline**: Using `pyrender` for high-fidelity top-down simulation of 3D OFF models.
+- **UrbanScene3D Sliding Window Rendering**: Distributed rendering of massive photogrammetric meshes into 1024x1024 tiles with 20m overlap, simulating satellite orthography.
+
+### Core Data Processing (RoofN3D & UrbanScene3D)
+Created `scripts/data/process_roofn3d.py` and `scripts/data/process_urbanscene3d.py` to handle the transition to superior 3D data sources.
+- **Offscreen Rendering**: Headless GPU/CPU rendering of mesh normals.
+- **Sliding Window Rendering**: (UrbanScene3D) Moves orthographic camera in a geographic grid to tile massive scenes.
+- **Precision Ground Truth**: Saves normals as float32 `.npy` files to prevent quantization artifacts in geometry loss.
+- **Dependencies**: `trimesh`, `pyrender`, `pyopengl`.
+
+### Unified Data Stream (`UniversalRoofDataset`)
+Located in `src/datasets/universal_roof_dataset.py`, this class unifies OmniCity, RoofN3D, and UrbanScene3D:
+- **Multi-Source Indexing**: Recursively scans multiple data roots to build a unified sample index.
+- **Stochastic Balancing**: Implements an `oversample=True` flag to automatically replicate samples from smaller datasets, ensuring the model sees an equal distribution of synthetic (UrbanScene3D) and real (OmniCity) data.
+- **Fail-Safe Normals**: Automatically handles missing normal maps by returning zero-tensors and a `valid_normal=0` flag for masked loss calculation.
+- **Augmented Geometry**: Native integration with `GoogleMapsAugmentation` ensures consistent vector rotations across all sources.
 
 ---
 © 2026 DeepRoof AI Team. Professional Grade AI for High-Fidelity 3D Reconstruction.

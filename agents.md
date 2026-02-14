@@ -43,4 +43,21 @@ The `tools/inference.py` script is now production-hardened:
 - **Learning Flow**: ✅ Verified. Loss decreased from 17.29 to 2.61 in a single optimization step.
 
 ---
+
+# 5. Technical Configuration Guide
+
+### Multi-Tile Merge Logic (`merge_tiles`)
+The system resolves tile boundary overlaps using a modified NMS algorithm that operates on global pixel coordinates.
+
+| Parameter | Type | Default | Impact |
+| :--- | :--- | :--- | :--- |
+| `iou_threshold` | float | 0.5 | Lowering this (e.g., 0.3) helps merge fragmented roofs but may accidentally merge separate houses in dense urban blocks. |
+| `method` | str | 'score' | `'score'` preserves the sharpest predicted edges. `'union'` is safer for industrial LOD-2 models to ensure connectivity. |
+
+### Domain Adaptation Strategy
+When training on Building3D or OmniCity, the pipeline implements:
+- **Sobel Normal Extraction**: Converting height maps to unit-norm surface vectors.
+- **Painter's Algorithm Rasterization**: For Building3D OBJs, ensure occlusion-aware rendering.
+
+---
 © 2026 DeepRoof AI Team. Professional Grade AI for High-Fidelity 3D Reconstruction.

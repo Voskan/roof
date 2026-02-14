@@ -23,6 +23,17 @@ pip install -U openmim
 mim install mmengine "mmcv>=2.0.0" "mmdet>=3.0.0" "mmsegmentation>=1.0.0"
 ```
 
+## Dataset Acquisition
+
+DeepRoof-2026 is trained on high-resolution urban datasets featuring 3D annotations. You can use the provided automated scripts to download these datasets:
+
+1.  **OmniCity (NYC)**: High-resolution satellite images with height maps and plane-wise annotations.
+    - [Download OmniCity at OpenDataLab](https://opendatalab.com/OmniCity)
+    - **Script**: `bash scripts/data/download_omnicity.sh` (Requires `openxlab login`).
+2.  **Building3D**: Aerial LiDAR point clouds and mesh models for 16 Estonian cities.
+    - [Official Building3D Repository](https://github.com/Building3D/Building3D)
+    - **Script**: `bash scripts/data/download_building3d.sh` (Downloads Tallinn and Tokyo subsets).
+
 ## Data Preparation
 
 To process the OmniCity dataset for training:
@@ -55,6 +66,13 @@ python tools/inference.py \
     --save_viz
 ```
 
+### Merge Strategy Configuration
+Large areas are processed in sliding window tiles. To refine the stitching of these tiles, adjust the following logic in `deeproof/utils/post_processing.py`:
+- **`iou_threshold`**: (Default: 0.5) Overlap threshold to consider two detections as the same object.
+- **`method`**: 
+    - `'score'`: Keep the detection with the highest confidence (best for clean boundaries).
+    - `'union'`: Geometrically merge the overlapping masks (best for large Warehouse roofs cut by tiles).
+
 ## Testing & Verification
 
 To verify the mathematical integrity and gradient flow of the Geometry Head:
@@ -72,4 +90,5 @@ python tests/test_geometry_gradient.py
 
 ---
 © 2026 DeepRoof AI Team. Professional Grade AI for High-Fidelity 3D Reconstruction.
+# roof
 # roof

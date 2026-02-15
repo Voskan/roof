@@ -7,7 +7,9 @@ DeepRoof-2026 is a state-of-the-art AI system for automated 3D roof layout extra
 # 1. Quick Start Guide
 
 - **Installation**: `pip install -r requirements.txt` (requires `mmsegmentation`).
-- **Data Prep**: `python scripts/data/process_omnicity.py --data-root datasets/OmniCity --output-dir data/OmniCity`
+- **Data Prep**: 
+  - `openxlab login` (for OmniCity)
+  - `bash scripts/data/download_all_datasets.sh`
 - **Training**: `python tools/train.py --config configs/deeproof_production_swin_L.py --gpus 4`
 - **Inference**: `python tools/inference.py --input /path/to/image.tif --output result.json`
 - **Verification**: `python tests/test_geometry_gradient.py`

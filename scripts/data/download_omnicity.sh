@@ -4,6 +4,12 @@
 
 set -e
 
+# Determine the project root (assumes script is in scripts/data/)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+
+cd "$PROJECT_ROOT"
+
 DATASET_ID="OpenDataLab/OmniCity"
 TARGET_DIR="datasets/OmniCity"
 

@@ -5,12 +5,18 @@
 
 set -e
 
+# Determine the project root (assumes script is in scripts/data/)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+
+cd "$PROJECT_ROOT"
+
 # Target RAW Directories
 RAW_OMNICITY="datasets/OmniCity"
 RAW_ROOFN3D="datasets/RoofN3D"
 RAW_URBANSCENE3D="datasets/UrbanScene3D"
 
-# Target PROCESSED Directories (as requested by user)
+# Target PROCESSED Directories
 PROC_OMNICITY="data/processed/omnicity"
 PROC_ROOFN3D="data/processed/roofn3d"
 PROC_URBANSCENE3D="data/processed/urbanscene3d"

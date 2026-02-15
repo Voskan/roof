@@ -27,6 +27,21 @@ mim install mmengine "mmcv>=2.0.0" "mmdet>=3.0.0" "mmsegmentation>=1.0.0"
 
 DeepRoof-2026 is trained on high-resolution urban datasets featuring 3D annotations. You can use the provided automated scripts to download these datasets:
 
+### Automated Download (Recommended)
+You can use the unified acquisition script to download all datasets sequentially. **Note**: OmniCity requires a one-time login.
+
+1.  **Login to OpenXLab**:
+    ```bash
+    pip install openxlab
+    openxlab login
+    ```
+    *(Follow the prompts to enter your credentials from https://openxlab.org.cn/)*
+
+2.  **Run Acquisition**:
+    ```bash
+    bash scripts/data/download_all_datasets.sh
+    ```
+
 1.  **OmniCity (NYC)**: High-resolution satellite images with height maps and plane-wise annotations.
     - [Download OmniCity at OpenDataLab](https://opendatalab.com/OmniCity)
     - **Script**: `bash scripts/data/download_omnicity.sh` (Requires `openxlab login`).

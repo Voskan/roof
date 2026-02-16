@@ -42,9 +42,9 @@ def main():
     # Define tasks for extraction
     tasks = [
         # Satellite Imagery
-        (dataset_dir / 'satellite-level' / 'image-satellite' / 'satellite-image-view1.zip', dataset_dir / 'satellite-level' / 'image-satellite' / 'view1'),
-        (dataset_dir / 'satellite-level' / 'image-satellite' / 'satellite-image-view2.zip', dataset_dir / 'satellite-level' / 'image-satellite' / 'view2'),
-        (dataset_dir / 'satellite-level' / 'image-satellite' / 'satellite-image-view3.zip', dataset_dir / 'satellite-level' / 'image-satellite' / 'view3'),
+        # (dataset_dir / 'satellite-level' / 'image-satellite' / 'satellite-image-view1.zip', dataset_dir / 'satellite-level' / 'image-satellite' / 'view1'),
+        # (dataset_dir / 'satellite-level' / 'image-satellite' / 'satellite-image-view2.zip', dataset_dir / 'satellite-level' / 'image-satellite' / 'view2'),
+        # (dataset_dir / 'satellite-level' / 'image-satellite' / 'satellite-image-view3.zip', dataset_dir / 'satellite-level' / 'image-satellite' / 'view3'),
         
         # Height Maps
         (dataset_dir / 'satellite-level' / 'annotation-height' / 'annotation-height-train.zip', dataset_dir / 'satellite-level' / 'annotation-height' / 'train'),

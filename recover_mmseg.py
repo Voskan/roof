@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import re
 from pathlib import Path
 
 def recover_mmseg_init():
@@ -22,9 +23,37 @@ def recover_mmseg_init():
 
     print(f"📍 Found mmsegmentation init at: {mmseg_path}")
     
-    # 2. Define the CLEAN content (Minimal working version)
-    # We strip out the version check block entirely.
-    clean_content = """# Copyright (c) OpenMMLab. All rights reserved.
+    # 2. Read CURRENT content
+    with open(mmseg_path, 'r') as f:
+        content = f.read()
+
+    print(f"📄 file size before: {len(content)} bytes")
+
+    # 3. Aggressive Cleaning Strategy
+    # We want to remove *everything* from the first `mmcv_min_version =` down to the `__all__ =` 
+    # and replace it with our clean block.
+    
+    # Pattern to match the entire messy block of version checks and assertions
+    pattern = r"(mmcv_min_version\s*=.*?)(?=__all__\s*=)"
+    
+    clean_block = """
+mmcv_min_version = digit_version(MMCV_MIN)
+mmcv_max_version = digit_version('9.9.9') # OVERRIDE by DeepRoof
+mmcv_version = digit_version(mmcv.__version__)
+
+mmengine_min_version = digit_version(MMENGINE_MIN)
+mmengine_max_version = digit_version('9.9.9') # OVERRIDE by DeepRoof
+mmengine_version = digit_version(mmengine.__version__)
+
+# CLEANED BY DEEPROOF RECOVERY SCRIPT
+\n"""
+
+    new_content = re.sub(pattern, clean_block, content, flags=re.DOTALL)
+    
+    # If regex failed (maybe the file is too broken), we fallback to FULL OVERWRITE
+    if len(new_content) == len(content) or "IndentationError" in new_content: 
+        print("⚠️ Regex didn't catch the block. Falling back to FULL OVERWRITE.")
+        new_content = """# Copyright (c) OpenMMLab. All rights reserved.
 import mmcv
 import mmengine
 from mmengine.utils import digit_version
@@ -44,22 +73,14 @@ mmengine_min_version = digit_version(MMENGINE_MIN)
 mmengine_max_version = digit_version('9.9.9') # OVERRIDE by DeepRoof
 mmengine_version = digit_version(mmengine.__version__)
 
-# assert (mmcv_min_version <= mmcv_version < mmcv_max_version), \\
-#     f'MMCV=={mmcv.__version__} is used but incompatible. ' \\
-#     f'Please install mmcv>={MMCV_MIN},<{MMCV_MAX}.'
-
-# assert (mmengine_min_version <= mmengine_version < mmengine_max_version), \\
-#     f'MMEngine=={mmengine.__version__} is used but incompatible. ' \\
-#     f'Please install mmengine>={MMENGINE_MIN},<{MMENGINE_MAX}.'
-
 __all__ = ['__version__', 'version_info', 'digit_version']
 """
 
-    # 3. Overwrite the corrupted file
+    # 4. Overwrite
     try:
         with open(mmseg_path, 'w') as f:
-            f.write(clean_content)
-        print("✅ SUCCESSFULLY OVERWROTE mmseg/__init__.py with clean content.")
+            f.write(new_content)
+        print("✅ SUCCESSFULLY OVERWROTE mmseg/__init__.py")
         print("⚠️ PLEASE RESTART YOUR KERNEL NOW.")
     except Exception as e:
         print(f"❌ Failed to write file: {e}")

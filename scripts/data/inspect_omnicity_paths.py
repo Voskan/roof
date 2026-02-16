@@ -111,6 +111,17 @@ def main():
                     potential_path = base_dir / Path(*rel_parts[1:])
         
         full_path = potential_path
+        
+        # Last resort: search for the specific leaf folder name anywhere in base_dir
+        if not full_path.exists():
+            leaf_name = rel_parts[-1]
+            print(f"  [~] Not at standard path. Searching for '{leaf_name}' recursively...")
+            for found in base_dir.rglob(leaf_name):
+                if found.is_dir():
+                    full_path = found
+                    print(f"  [+] Found at: {full_path}")
+                    break
+
         print(f"Inspecting: {full_path}...")
         
         if full_path.exists():

@@ -59,15 +59,22 @@ def main():
         initial_report = json.load(f)
 
     # Determine base path for data
-    # The report has "datasets_root" which is /workspace/roof/scripts/data/datasets
-    # Key paths in report are like "OmniCity/OpenDataLab___OmniCity/..."
-    # So base is the parent of datasets_root
-    base_dir = Path(initial_report["datasets_root"]).parent
+    # The report has "datasets_root" which is e.g. /workspace/roof/scripts/data/datasets
+    report_datasets_root = Path(initial_report.get("datasets_root", ""))
+    
+    base_dir = report_datasets_root
     if args.data_root:
-        base_dir = Path(args.data_root)
+        # If user provides data-root, we assume it's the parent of "datasets"
+        passed_root = Path(args.data_root)
+        if passed_root.name == 'datasets':
+            base_dir = passed_root
+        elif (passed_root / 'datasets').exists():
+            base_dir = passed_root / 'datasets'
+        else:
+            base_dir = passed_root
 
     print(f"--- Granular OmniCity Inspection ---")
-    print(f"Base Directory: {base_dir}")
+    print(f"Base Directory for Search: {base_dir}")
 
     inspection_results = {
         "base_dir": str(base_dir),
@@ -79,17 +86,38 @@ def main():
 
     if not key_paths:
         print("No key paths found for OmniCity in report.")
-        return
+        # Fallback: manually add common expected paths if report is empty
+        key_paths = [
+            "OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/image-satellite",
+            "OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/annotation-height",
+            "OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/annotation-seg"
+        ]
 
     for path_rel in key_paths:
-        full_path = base_dir / path_rel
-        print(f"Inspecting: {path_rel}...")
+        # path_rel usually starts with "OmniCity/..."
+        # base_dir is usually ending in ".../datasets"
         
-        profile = get_folder_profile(full_path)
-        if profile:
-            # Convert defaultdict to dict
-            profile["extensions"] = dict(profile["extensions"])
-            inspection_results["paths"][path_rel] = profile
+        # Try to resolve the path logically
+        full_path = base_dir / Path(path_rel).name # Simple fallback
+        
+        # Better: try to find where path_rel fits
+        potential_path = base_dir.parent / path_rel
+        if not potential_path.exists():
+            potential_path = base_dir / path_rel
+            if not potential_path.exists() and "OmniCity" in path_rel:
+                # Handle cases where OmniCity is duplicated or missing in the join
+                rel_parts = Path(path_rel).parts
+                if rel_parts[0] == "OmniCity":
+                    potential_path = base_dir / Path(*rel_parts[1:])
+        
+        full_path = potential_path
+        print(f"Inspecting: {full_path}...")
+        
+        if full_path.exists():
+            profile = get_folder_profile(full_path)
+            if profile:
+                profile["extensions"] = dict(profile["extensions"])
+                inspection_results["paths"][str(full_path)] = profile
         else:
             print(f"  [!] Path not found: {full_path}")
 

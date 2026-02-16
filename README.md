@@ -61,10 +61,20 @@ python scripts/data/process_omnicity.py \
 
 ## Training
 
-Launch production training on a 4-GPU cluster (optimized for NVIDIA A100):
+DeepRoof-2026 supports both production training from scratch and fine-tuning on custom datasets.
+
+### Production Training
+Launch training on a 4-GPU cluster (optimized for NVIDIA A100):
 
 ```bash
-python tools/train.py --config configs/deeproof_production_swin_L.py --gpus 4
+python scripts/training/train.py --config configs/deeproof_production_swin_L.py --launcher pytorch
+```
+
+### Fine-Tuning
+To fine-tune on specific urban datasets with pre-trained weights:
+
+```bash
+python scripts/training/train.py --config configs/deeproof_finetune_swin_L.py --launcher pytorch
 ```
 
 ## Inference

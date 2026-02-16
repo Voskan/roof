@@ -123,57 +123,44 @@ class DeepRoofDataset(BaseSegDataset):
         
         # 5. Apply Augmentations
         if not self.test_mode:
-            # Albumentations expects specific keys
-            # 'image', 'mask' (for semantic), 'instance_mask' (custom), 'normals' (custom)
-            # But standard Albumentations only augments 'image', 'mask', 'masks'.
-            # We can stack masks or use additional_targets in the pipeline init
+            # We pass image, mask (semantic), and normals to the augmentor.
+            # GoogleMapsAugmentation is a GeometricAugmentation wrapper that
+            # handles the replay logic for vector rotations of 'normals'.
+            # We also need to handle 'instance_mask'.
             
-            # Since our pipeline currently only knows 'image' and 'mask',
-            # we need to be careful.
-            # Best way: stack all masks/normals into a multi-channel tensor?
-            # Or assume GoogleMapsAugmentation is robust enough.
-            # Let's use the augmentor we created.
+            # Temporary hack: Treat instance_mask as another 'mask' by passing it 
+            # as an additional target if not already configured.
+            # But the most robust way is to use the augmentor as intended.
             
-            # WARNING: The augmentor defined in step 128 has:
-            # additional_targets={'mask': 'mask', 'depth': 'image'}
-            # We can treat normals as 'depth' map to get geometric transforms (rot/flip) but NOT color jitter
+            augmented = self.augmentor(
+                image=img, 
+                mask=semantic_mask,
+                normals=normals
+            )
             
-            # Just relying on augmentor.__call__
-            augmented = self.augmentor(image=img, mask=semantic_mask)
-            img_aug = augmented['image']          # Tensor
-            semantic_mask_aug = augmented['mask'] # Tensor
+            # NOTE: GoogleMapsAugmentation currently only has 'mask' and 'normals' 
+            # as additional targets. We need to ensure instance_mask is also transformed.
+            # Applying the same spatial transform to instance_mask:
+            instance_mask_aug = A.ReplayCompose.replay(augmented['replay'], image=instance_mask)['image']
             
-            # NOTE: We need to augment instance_mask and normals too!
-            # The simple pipeline in 128 might not be enough for this multi-task setup 
-            # without modification to include 'global_masks'. 
-            # For this exercise, I will assume we extend the dictionary passing.
-            
-            # Re-invoking transform with all targets is tricky if pipeline is random.
-            # ReplayCompose is needed.
-            # For simplicity in this artifact, I will apply basic augmentations or
-            # define a custom collate. 
-            
-            # Returning non-augmented tensors for now to match strict requirements if pipeline isn't Replay-compatible yet.
-            # But user Requirement 7 says "Apply augmentations".
-            # I will assume the augmentor can handle 'normals' if we pass it as 'image' target? No, color jitter would ruin it.
-            
-            # PROPER FIX: Pass normals as 'mask' type to avoid color jitter? No, normals are float.
-            # Valid approach: Albumentations 'image' and 'mask' keys.
-            
-            # Let's just return the tensors for now to satisfy the interface.
-            img_tensor = img_aug
-            sem_tensor = semantic_mask_aug.long()
+            img_tensor = augmented['image']          # already ToTensorV2'd
+            sem_tensor = augmented['mask'].long()
+            normal_tensor = augmented['normals'].permute(2, 0, 1).float()
+            instance_tensor = torch.from_numpy(instance_mask_aug).long()
             
         else:
-            to_tensor = A.Compose([A.Normalize(), ToTensorV2()])
-            transformed = to_tensor(image=img)
+            # Test mode: just normalization and tensor conversion
+            # Using a basic pipeline for consistency
+            eval_transform = A.Compose([
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                ToTensorV2()
+            ])
+            transformed = eval_transform(image=img)
             img_tensor = transformed['image']
             sem_tensor = torch.from_numpy(semantic_mask).long()
+            instance_tensor = torch.from_numpy(instance_mask).long()
+            normal_tensor = torch.from_numpy(normals).permute(2, 0, 1).float()
 
-        # Convert others to tensor
-        instance_tensor = torch.from_numpy(instance_mask).long()
-        normal_tensor = torch.from_numpy(normals).permute(2, 0, 1).float()
-        
         return dict(
             img=img_tensor,
             gt_semantic_seg=sem_tensor,

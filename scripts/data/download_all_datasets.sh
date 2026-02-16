@@ -33,8 +33,29 @@ fi
 
 # Note: openxlab login might be required interactively if not already logged in
 echo "Downloading OmniCity to ${RAW_OMNICITY}..."
-# Using corrected flags: -r for repo and -s / for entire directory
-openxlab dataset download --dataset-repo OpenDataLab/OmniCity --source-path / --target-path "${RAW_OMNICITY}"
+
+# Retry logic for handling 503 Service Unavailable
+MAX_RETRIES=3
+RETRY_COUNT=0
+SUCCESS=false
+
+mkdir -p "${RAW_OMNICITY}"
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    if openxlab dataset download --dataset-repo OpenDataLab/OmniCity --source-path / --target-path "${RAW_OMNICITY}"; then
+        SUCCESS=true
+        break
+    else
+        echo "Download failed (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES). Retrying in 10 seconds..."
+        sleep 10
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+    fi
+done
+
+if [ "$SUCCESS" = false ]; then
+    echo "Error: Failed to download OmniCity after $MAX_RETRIES attempts."
+    exit 1
+fi
 
 # Trigger OmniCity Processing (TIF/Mask -> RGB/Normal)
 echo "Processing OmniCity..."

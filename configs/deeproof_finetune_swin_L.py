@@ -3,15 +3,21 @@ _base_ = [
     './deeproof_production_swin_L.py',
 ]
 
-# 1. Load Pre-trained Weights
+# 1. Training Parameters
+# ----------------------
+max_iters = 20000        # Total training steps (~30-50 epochs depending on dataset size)
+val_interval = 2000     # Evaluate every 2000 steps
+batch_size = 4          # Images per GPU (Total 16 if 4 GPUs)
+input_res = (1024, 1024) # High-quality resolution for roof detail
+
+# 2. Load Pre-trained Weights
 # Pre-trained on ImageNet-22K then building-specific datasets
 load_from = 'https://download.openmmlab.com/mmsegmentation/v0.5/mask2former/mask2former_swin-l-in22k-384x384_8x2_50e_ade20k/mask2former_swin-l-in22k-384x384_8x2_50e_ade20k_20221204_194411-d00d9841.pth'
 
-# 2. Adjust Learning Rate for Fine-tuning
-# Typically use a lower LR for fine-tuning
+# 3. Adjust Learning Rate for Fine-tuning
 optimizer = dict(
     type='AdamW',
-    lr=0.00005, # Halved for fine-tuning stability
+    lr=0.00005, # Stable LR for fine-tuning
     weight_decay=0.01,
     eps=1e-8,
     betas=(0.9, 0.999)

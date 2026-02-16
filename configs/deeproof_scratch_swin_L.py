@@ -32,29 +32,31 @@ optim_wrapper = dict(
     clip_grad=dict(max_norm=0.01, norm_type=2)
 )
 
-# 4. Long-Term Schedule
-# ---------------------
+# 4. Long-Term Schedule (EPOCH BASED)
+# ----------------------------------
 train_cfg = dict(
-    type='IterBasedTrainLoop', 
-    max_iters=160000, 
-    val_interval=8000
+    type='EpochBasedTrainLoop', 
+    max_epochs=150,      # ~160k iterations adjusted to epochs based on OmniCity size
+    val_interval=1       # Evaluate and print results every single epoch
 )
+val_cfg = dict(type='ValLoop')
+test_cfg = dict(type='TestLoop')
 
 param_scheduler = [
     dict(
         type='LinearLR',
         start_factor=0.0001,
-        by_epoch=False,
+        by_epoch=True,
         begin=0,
-        end=1500           # Longer warmup for scratch stability
+        end=2              # Warmup for first 2 epochs
     ),
     dict(
         type='PolyLR',
         power=0.9,
-        begin=1500,
-        end=160000,
+        begin=2,
+        end=150,
         min_lr=1e-7,
-        by_epoch=False
+        by_epoch=True
     )
 ]
 
@@ -63,13 +65,13 @@ param_scheduler = [
 default_hooks = dict(
     checkpoint=dict(
         type='CheckpointHook',
-        by_epoch=False,
-        interval=10000,      # Save periodic snapshots
+        by_epoch=True,
+        interval=5,          # Save periodic snapshots every 5 epochs
         max_keep_ckpts=5,    # Keep last 5 snapshots
         save_best='mIoU',    # ALWAYS keep the best performing model
         published_keys=['meta', 'state_dict']
     ),
-    logger=dict(type='LoggerHook', interval=100)
+    logger=dict(type='LoggerHook', interval=50) # Print stats every 50 batches
 )
 
 # 6. High-Intensity Data Augmentation

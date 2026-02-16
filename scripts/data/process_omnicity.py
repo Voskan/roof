@@ -57,11 +57,12 @@ def process_single_image(
     Process a single image: load height map, generate instance masks, calculate normals.
     """
     # Paths (Adjust based on actual OmniCity structure)
-    # Assuming standard structure: images/{id}.tif, height/{id}.tif
+    # Search for height map in data_root/height or data_root/split/height
     height_path = data_root / 'height' / f"{image_id}.tif"
+    if not height_path.exists():
+        height_path = data_root / args.split / 'height' / f"{image_id}.tif"
     
     if not height_path.exists():
-        # Fallback or skip if not found
         # print(f"Warning: Height map not found: {height_path}")
         return
 
@@ -120,8 +121,9 @@ def main():
     # Load Annotations
     ann_file = data_root / 'annotations' / f"{args.split}.json"
     if not ann_file.exists():
-        print(f"Annotation file not found: {ann_file}")
-        return
+        ann_file = data_root / args.split / 'annotations' / f"{args.split}.json"
+    
+    if not ann_file.exists():
         
     with open(ann_file, 'r') as f:
         coco_data = json.load(f)

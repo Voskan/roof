@@ -1,0 +1,17 @@
+{
+    "summary": {
+        "OmniCity": {
+            "total_files": 0,
+            "zips": 0,
+            "tifs": 0,
+            "jsons": 0
+        }
+    },
+    "structure": {
+        "OmniCity": ""
+    },
+    "issues": [
+        "RoofN3D directory missing.",
+        "UrbanScene3D directory missing."
+    ]
+}

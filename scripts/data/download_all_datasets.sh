@@ -57,6 +57,30 @@ if [ "$SUCCESS" = false ]; then
     exit 1
 fi
 
+# Flatten OmniCity structure if nested by openxlab
+# openxlab often creates: datasets/OmniCity/OpenDataLab___OmniCity/raw/...
+NESTED_DIR="${RAW_OMNICITY}/OpenDataLab___OmniCity/raw"
+if [ -d "$NESTED_DIR" ]; then
+    echo "Flattening OmniCity structure..."
+    
+    # Unzip if zip files exist
+    find "$NESTED_DIR" -name "*.zip" -exec unzip -q {} -d "$NESTED_DIR" \;
+    
+    # Find the actual data folder (omnicity-v2.0-crossview-segmentation or similar)
+    DATA_SUBDIR=$(find "$NESTED_DIR" -maxdepth 1 -type d -name "omnicity*" | head -n 1)
+    
+    if [ -n "$DATA_SUBDIR" ]; then
+        echo "Found data in $DATA_SUBDIR. Moving to $RAW_OMNICITY..."
+        mv "$DATA_SUBDIR"/* "${RAW_OMNICITY}/"
+    else
+        echo "No data subdirectory found in $NESTED_DIR. Moving all files from nested dir..."
+        mv "$NESTED_DIR"/* "${RAW_OMNICITY}/"
+    fi
+    
+    # Clean up nested structure
+    rm -rf "${RAW_OMNICITY}/OpenDataLab___OmniCity"
+fi
+
 # Trigger OmniCity Processing (TIF/Mask -> RGB/Normal)
 echo "Processing OmniCity..."
 python scripts/data/process_omnicity.py --data-root "${RAW_OMNICITY}" --output-dir "${PROC_OMNICITY}"

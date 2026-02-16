@@ -4,6 +4,11 @@ _base_ = [
     './swin/swin_large.py', # Inherit Backbone & Neck from Swin-L
 ]
 
+# 0. Custom Imports
+custom_imports = dict(
+    imports=['deeproof.models.heads.mask2former_head', 'deeproof.models.deeproof_model', 'deeproof.models.heads.geometry_head'],
+    allow_failed_imports=False)
+
 # 1. Model Configuration
 model = dict(
     type='DeepRoofMask2Former', # Our Multi-Task Model
@@ -21,7 +26,7 @@ model = dict(
     geometry_loss_weight=5.0,
     
     decode_head=dict(
-        type='Mask2FormerHead',
+        type='DeepRoofMask2FormerHead',
         # Standard Mask2Former params
         # ... (inherited/default logic)
         loss_mask=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=5.0),
@@ -50,9 +55,38 @@ train_dataloader = dict(
         type=dataset_type,
         data_root=data_root,
         ann_file='train.txt',
+        img_suffix='.jpg',
+        seg_map_suffix='.png',
+        normal_suffix='.npy',
         pipeline=train_pipeline
     )
 )
+
+val_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations', with_bbox=True, with_mask=True),
+    dict(type='PackSegInputs')
+]
+
+val_dataloader = dict(
+    batch_size=1,
+    num_workers=4,
+    persistent_workers=True,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type=dataset_type,
+        data_root=data_root,
+        ann_file='val.txt',
+        img_suffix='.jpg',
+        seg_map_suffix='.png',
+        normal_suffix='.npy',
+        pipeline=val_pipeline
+    )
+)
+
+val_evaluator = dict(type='IoUMetric', iou_metrics=['mIoU'])
+test_dataloader = val_dataloader
+test_evaluator = val_evaluator
 
 # 3. Optimizer & Scheduler (A100 Best Practice)
 optimizer = dict(

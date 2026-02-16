@@ -1,0 +1,432 @@
+{
+    "base_dir": "/workspace/roof/scripts/data/datasets",
+    "paths": {
+        "/workspace/roof/scripts/data/datasets/OmniCity/annotations": {
+            "max_depth": 0,
+            "total_files": 6,
+            "extensions": {
+                ".json": 6
+            },
+            "subdirs": [],
+            "samples": [
+                "annotation-seg-view1-test.json",
+                "annotation-seg-view1-train.json",
+                "annotation-seg-view2-test.json",
+                "annotation-seg-view2-train.json",
+                "annotation-seg-view3-test.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/height": {
+            "max_depth": 0,
+            "total_files": 25064,
+            "extensions": {
+                ".tif": 25064
+            },
+            "subdirs": [],
+            "samples": [
+                "40.665595,-73.885689_2019-11_4NoYz-ycyt3D4fmNm98E4w_d13_z2.tif",
+                "40.665601,-73.868539_2019-11_63o-o2Rx746RQn63z6Fnkg_d10_z2.tif",
+                "40.665606,-73.873916_2019-11_C0J7-Zs8Aa45QSwXlHq8YA_d120_z2.tif",
+                "40.665614,-73.874713_2019-11_N0uNoVVwRkEJjmLhpHBGFw_d301_z2.tif",
+                "40.665624,-73.869510_2019-11_BlFMfYmUz7rykgVpil1KNA_d8_z2.tif"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/images": {
+            "max_depth": 0,
+            "total_files": 0,
+            "extensions": {},
+            "subdirs": [],
+            "samples": []
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/sample/image": {
+            "max_depth": 0,
+            "total_files": 30,
+            "extensions": {
+                ".jpg": 30
+            },
+            "subdirs": [],
+            "samples": [
+                "30.jpg",
+                "29.jpg",
+                "28.jpg",
+                "27.jpg",
+                "26.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level": {
+            "max_depth": 3,
+            "total_files": 15588,
+            "extensions": {
+                ".zip": 4,
+                ".jpg": 15574,
+                ".json": 10
+            },
+            "subdirs": [
+                "image-panorama",
+                "image-mono",
+                "annotation-panorama",
+                "annotation-mono"
+            ],
+            "samples": [
+                "image-panorama/image-panorama-train.zip",
+                "image-panorama/image-panorama-test.zip",
+                "image-mono/image-mono-train.zip",
+                "image-mono/image-mono-test.zip",
+                "image-mono/test/image-mono-test/40.750426,-73.991034_2019-06_g5M5GXUmV2xDxal6AYBCEA_d332_z2_idx1.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/image-panorama": {
+            "max_depth": 0,
+            "total_files": 2,
+            "extensions": {
+                ".zip": 2
+            },
+            "subdirs": [],
+            "samples": [
+                "image-panorama-train.zip",
+                "image-panorama-test.zip"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/image-mono": {
+            "max_depth": 2,
+            "total_files": 15576,
+            "extensions": {
+                ".zip": 2,
+                ".jpg": 15574
+            },
+            "subdirs": [
+                "test",
+                "train"
+            ],
+            "samples": [
+                "image-mono-train.zip",
+                "image-mono-test.zip",
+                "test/image-mono-test/40.750426,-73.991034_2019-06_g5M5GXUmV2xDxal6AYBCEA_d332_z2_idx1.jpg",
+                "test/image-mono-test/40.750426,-73.991034_2019-06_g5M5GXUmV2xDxal6AYBCEA_d332_z2_idx0.jpg",
+                "test/image-mono-test/40.750386,-73.983217_2019-06_Z92Z1fEBMf1aLabXPHZEqg_d244_z2_idx0.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/image-mono/test/image-mono-test": {
+            "max_depth": 0,
+            "total_files": 3000,
+            "extensions": {
+                ".jpg": 3000
+            },
+            "subdirs": [],
+            "samples": [
+                "40.750426,-73.991034_2019-06_g5M5GXUmV2xDxal6AYBCEA_d332_z2_idx1.jpg",
+                "40.750426,-73.991034_2019-06_g5M5GXUmV2xDxal6AYBCEA_d332_z2_idx0.jpg",
+                "40.750386,-73.983217_2019-06_Z92Z1fEBMf1aLabXPHZEqg_d244_z2_idx0.jpg",
+                "40.750346,-73.991094_2019-06_zVKj0r5IttKA3CY-7ace3A_d331_z2_idx1.jpg",
+                "40.750204,-73.994927_2019-06_ZwGvz6iVKdVGPBDYSLYQKA_d151_z2_idx1.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/image-mono/train/image-mono-train": {
+            "max_depth": 0,
+            "total_files": 12574,
+            "extensions": {
+                ".jpg": 12574
+            },
+            "subdirs": [],
+            "samples": [
+                "40.834749,-73.920695_2019-08_3NzhJxGQLVXIc4oUraK-wg_d155_z2_idx1.jpg",
+                "40.834749,-73.920695_2019-08_3NzhJxGQLVXIc4oUraK-wg_d155_z2_idx0.jpg",
+                "40.834744,-73.913169_2019-09_NvXVDvJfkVjTRGNEpkR3aA_d155_z2_idx1.jpg",
+                "40.834744,-73.913169_2019-09_NvXVDvJfkVjTRGNEpkR3aA_d155_z2_idx0.jpg",
+                "40.834735,-73.912231_2019-08__P_zEdo2mCHQIzsKO921_A_d158_z2_idx1.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/annotation-panorama": {
+            "max_depth": 1,
+            "total_files": 4,
+            "extensions": {
+                ".json": 4
+            },
+            "subdirs": [
+                "annotation-panorama-landuse",
+                "annotation-panorama-instance"
+            ],
+            "samples": [
+                "annotation-panorama-landuse/annotation-panorama-landuse-train.json",
+                "annotation-panorama-landuse/annotation-panorama-landuse-test.json",
+                "annotation-panorama-instance/annotation-panorama-instance-train.json",
+                "annotation-panorama-instance/annotation-panorama-instance-test.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/annotation-panorama/annotation-panorama-landuse": {
+            "max_depth": 0,
+            "total_files": 2,
+            "extensions": {
+                ".json": 2
+            },
+            "subdirs": [],
+            "samples": [
+                "annotation-panorama-landuse-train.json",
+                "annotation-panorama-landuse-test.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/annotation-panorama/annotation-panorama-instance": {
+            "max_depth": 0,
+            "total_files": 2,
+            "extensions": {
+                ".json": 2
+            },
+            "subdirs": [],
+            "samples": [
+                "annotation-panorama-instance-train.json",
+                "annotation-panorama-instance-test.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/annotation-mono": {
+            "max_depth": 1,
+            "total_files": 6,
+            "extensions": {
+                ".json": 6
+            },
+            "subdirs": [
+                "annotation-mono-plane",
+                "annotation-mono-landuse",
+                "annotation-mono-instance"
+            ],
+            "samples": [
+                "annotation-mono-plane/annotation-mono-plane-train.json",
+                "annotation-mono-plane/annotation-mono-plane-test.json",
+                "annotation-mono-landuse/annotation-mono-landuse-train.json",
+                "annotation-mono-landuse/annotation-mono-landuse-test.json",
+                "annotation-mono-instance/annotation-mono-instance-train.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/annotation-mono/annotation-mono-plane": {
+            "max_depth": 0,
+            "total_files": 2,
+            "extensions": {
+                ".json": 2
+            },
+            "subdirs": [],
+            "samples": [
+                "annotation-mono-plane-train.json",
+                "annotation-mono-plane-test.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/annotation-mono/annotation-mono-landuse": {
+            "max_depth": 0,
+            "total_files": 2,
+            "extensions": {
+                ".json": 2
+            },
+            "subdirs": [],
+            "samples": [
+                "annotation-mono-landuse-train.json",
+                "annotation-mono-landuse-test.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/street-level/annotation-mono/annotation-mono-instance": {
+            "max_depth": 0,
+            "total_files": 2,
+            "extensions": {
+                ".json": 2
+            },
+            "subdirs": [],
+            "samples": [
+                "annotation-mono-instance-train.json",
+                "annotation-mono-instance-test.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level": {
+            "max_depth": 4,
+            "total_files": 99907,
+            "extensions": {
+                ".zip": 5,
+                ".jpg": 74832,
+                ".json": 6,
+                ".tif": 25064
+            },
+            "subdirs": [
+                "image-satellite",
+                "annotation-seg",
+                "annotation-height"
+            ],
+            "samples": [
+                "image-satellite/satellite-image-view3.zip",
+                "image-satellite/satellite-image-view2.zip",
+                "image-satellite/satellite-image-view1.zip",
+                "image-satellite/view3/satellite-image-view3/view3-train/40.834804,-73.898774_2019-09_NtRIjNOzSrDqyLMmTOe2LA_d250_z2.jpg",
+                "image-satellite/view3/satellite-image-view3/view3-train/40.834801,-73.919619_2019-09__RHGMu_xSG5MJedpL6x3sA_d340_z2.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/image-satellite": {
+            "max_depth": 3,
+            "total_files": 74835,
+            "extensions": {
+                ".zip": 3,
+                ".jpg": 74832
+            },
+            "subdirs": [
+                "view3",
+                "view2",
+                "view1"
+            ],
+            "samples": [
+                "satellite-image-view3.zip",
+                "satellite-image-view2.zip",
+                "satellite-image-view1.zip",
+                "view3/satellite-image-view3/view3-train/40.834804,-73.898774_2019-09_NtRIjNOzSrDqyLMmTOe2LA_d250_z2.jpg",
+                "view3/satellite-image-view3/view3-train/40.834801,-73.919619_2019-09__RHGMu_xSG5MJedpL6x3sA_d340_z2.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/image-satellite/view3/satellite-image-view3": {
+            "max_depth": 1,
+            "total_files": 24884,
+            "extensions": {
+                ".jpg": 24884
+            },
+            "subdirs": [
+                "view3-train",
+                "view3-test"
+            ],
+            "samples": [
+                "view3-train/40.834804,-73.898774_2019-09_NtRIjNOzSrDqyLMmTOe2LA_d250_z2.jpg",
+                "view3-train/40.834801,-73.919619_2019-09__RHGMu_xSG5MJedpL6x3sA_d340_z2.jpg",
+                "view3-train/40.834798,-73.918256_2019-08_ACSCnfLXLUlHJtovEeyatA_d248_z2.jpg",
+                "view3-train/40.834787,-73.924222_2019-09_CnCi8TPbKRsezDixKRjBsg_d332_z2.jpg",
+                "view3-train/40.834784,-73.911287_2019-09_MiEE6PVYmVujnqJPXTCrZw_d265_z2.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/image-satellite/view2/satellite-image-view2": {
+            "max_depth": 1,
+            "total_files": 24884,
+            "extensions": {
+                ".jpg": 24884
+            },
+            "subdirs": [
+                "view2-train",
+                "view2-test"
+            ],
+            "samples": [
+                "view2-train/40.834804,-73.898774_2019-09_NtRIjNOzSrDqyLMmTOe2LA_d250_z2.jpg",
+                "view2-train/40.834801,-73.919619_2019-09__RHGMu_xSG5MJedpL6x3sA_d340_z2.jpg",
+                "view2-train/40.834798,-73.918256_2019-08_ACSCnfLXLUlHJtovEeyatA_d248_z2.jpg",
+                "view2-train/40.834787,-73.924222_2019-09_CnCi8TPbKRsezDixKRjBsg_d332_z2.jpg",
+                "view2-train/40.834784,-73.911287_2019-09_MiEE6PVYmVujnqJPXTCrZw_d265_z2.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/image-satellite/view1/satellite-image-view1": {
+            "max_depth": 1,
+            "total_files": 25064,
+            "extensions": {
+                ".jpg": 25064
+            },
+            "subdirs": [
+                "view1-train",
+                "view1-test"
+            ],
+            "samples": [
+                "view1-train/40.834804,-73.898774_2019-09_NtRIjNOzSrDqyLMmTOe2LA_d250_z2.jpg",
+                "view1-train/40.834801,-73.919619_2019-09__RHGMu_xSG5MJedpL6x3sA_d340_z2.jpg",
+                "view1-train/40.834798,-73.918256_2019-08_ACSCnfLXLUlHJtovEeyatA_d248_z2.jpg",
+                "view1-train/40.834787,-73.924222_2019-09_CnCi8TPbKRsezDixKRjBsg_d332_z2.jpg",
+                "view1-train/40.834784,-73.911287_2019-09_MiEE6PVYmVujnqJPXTCrZw_d265_z2.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/annotation-seg": {
+            "max_depth": 0,
+            "total_files": 6,
+            "extensions": {
+                ".json": 6
+            },
+            "subdirs": [],
+            "samples": [
+                "annotation-seg-view3-train.json",
+                "annotation-seg-view3-test.json",
+                "annotation-seg-view2-train.json",
+                "annotation-seg-view2-test.json",
+                "annotation-seg-view1-train.json"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/annotation-height": {
+            "max_depth": 2,
+            "total_files": 25066,
+            "extensions": {
+                ".zip": 2,
+                ".tif": 25064
+            },
+            "subdirs": [
+                "test",
+                "train"
+            ],
+            "samples": [
+                "annotation-height-train.zip",
+                "annotation-height-test.zip",
+                "test/annotation-height-test/40.750346,-73.991094_2019-06_zVKj0r5IttKA3CY-7ace3A_d331_z2.tif",
+                "test/annotation-height-test/40.750342,-73.975495_2019-06_GwEMftjm3Z6pKbyXD_rTjQ_d61_z2.tif",
+                "test/annotation-height-test/40.750335,-73.979311_2019-06_P5lvR35DVS50Tp4gj-xlSg_d242_z2.tif"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/annotation-height/test/annotation-height-test": {
+            "max_depth": 0,
+            "total_files": 5064,
+            "extensions": {
+                ".tif": 5064
+            },
+            "subdirs": [],
+            "samples": [
+                "40.750346,-73.991094_2019-06_zVKj0r5IttKA3CY-7ace3A_d331_z2.tif",
+                "40.750342,-73.975495_2019-06_GwEMftjm3Z6pKbyXD_rTjQ_d61_z2.tif",
+                "40.750335,-73.979311_2019-06_P5lvR35DVS50Tp4gj-xlSg_d242_z2.tif",
+                "40.750291,-73.979205_2019-06_ZXQAuvH90P86OdbdltQELw_d241_z2.tif",
+                "40.750284,-73.994869_2019-06_So9vOmlDnCOHuGmFJ9-NHQ_d152_z2.tif"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/OmniCity-dataset/satellite-level/annotation-height/train/annotation-height-train": {
+            "max_depth": 0,
+            "total_files": 20000,
+            "extensions": {
+                ".tif": 20000
+            },
+            "subdirs": [],
+            "samples": [
+                "40.834804,-73.898774_2019-09_NtRIjNOzSrDqyLMmTOe2LA_d250_z2.tif",
+                "40.834801,-73.919619_2019-09__RHGMu_xSG5MJedpL6x3sA_d340_z2.tif",
+                "40.834798,-73.918256_2019-08_ACSCnfLXLUlHJtovEeyatA_d248_z2.tif",
+                "40.834787,-73.924222_2019-09_CnCi8TPbKRsezDixKRjBsg_d332_z2.tif",
+                "40.834784,-73.911287_2019-09_MiEE6PVYmVujnqJPXTCrZw_d265_z2.tif"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/omnicity-v2.0-crossview-segmentation/val/images": {
+            "max_depth": 1,
+            "total_files": 7200,
+            "extensions": {
+                ".jpg": 3600,
+                ".png": 3600
+            },
+            "subdirs": [
+                "svi",
+                "sate"
+            ],
+            "samples": [
+                "svi/40.75042868,-73.99102443_2019-06_g5M5GXUmV2xDxal6AYBCEA_d332_z2.jpg",
+                "svi/40.75034866,-73.99108424_2019-06_zVKj0r5IttKA3CY-7ace3A_d331_z2.jpg",
+                "svi/40.75020804,-73.97899549_2019-06_BePOocM8imV03SuZGDy6lA_d241_z2.jpg",
+                "svi/40.75007776,-73.97868951_2019-06_w8ucVQXdKTMAQLV01Wi-aw_d240_z2.jpg",
+                "svi/40.75006196,-73.98634923_2019-06_983Dp0KTqJki0gShRfIGkQ_d241_z2.jpg"
+            ]
+        },
+        "/workspace/roof/scripts/data/datasets/OmniCity/OpenDataLab___OmniCity/raw/omnicity-v2.0-crossview-segmentation/train/images": {
+            "max_depth": 1,
+            "total_files": 5202,
+            "extensions": {
+                ".jpg": 5202
+            },
+            "subdirs": [
+                "svi"
+            ],
+            "samples": [
+                "svi/40.83512105,-73.89999467_2019-09_K1sC2q2iG1YRQsnfdhjnjQ_d252_z2.jpg",
+                "svi/40.83510107,-73.91234636_2019-09_X-SWbMJL1OYlo8BzWspUHQ_d67_z2.jpg",
+                "svi/40.83503919,-73.92172472_2019-08_BXDE3MyHlzh9OUrcNe3MbQ_d342_z2.jpg",
+                "svi/40.83502124,-73.92053751_2019-08_n7GXsXzSDVTreSuEtGnIIA_d156_z2.jpg",
+                "svi/40.83499145,-73.91937926_2019-08_IBLJF1Di0Kwg2UV2DrnmCw_d57_z2.jpg"
+            ]
+        }
+    }
+}

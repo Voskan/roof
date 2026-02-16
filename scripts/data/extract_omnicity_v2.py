@@ -47,12 +47,12 @@ def main():
         # (dataset_dir / 'satellite-level' / 'image-satellite' / 'satellite-image-view3.zip', dataset_dir / 'satellite-level' / 'image-satellite' / 'view3'),
         
         # Height Maps
-        (dataset_dir / 'satellite-level' / 'annotation-height' / 'annotation-height-train.zip', dataset_dir / 'satellite-level' / 'annotation-height' / 'train'),
-        (dataset_dir / 'satellite-level' / 'annotation-height' / 'annotation-height-test.zip', dataset_dir / 'satellite-level' / 'annotation-height' / 'test'),
+        # (dataset_dir / 'satellite-level' / 'annotation-height' / 'annotation-height-train.zip', dataset_dir / 'satellite-level' / 'annotation-height' / 'train'),
+        # (dataset_dir / 'satellite-level' / 'annotation-height' / 'annotation-height-test.zip', dataset_dir / 'satellite-level' / 'annotation-height' / 'test'),
         
         # Street Level (Optional but good for completeness)
-        (dataset_dir / 'street-level' / 'image-mono' / 'image-mono-train.zip', dataset_dir / 'street-level' / 'image-mono' / 'train'),
-        (dataset_dir / 'street-level' / 'image-mono' / 'image-mono-test.zip', dataset_dir / 'street-level' / 'image-mono' / 'test'),
+        # (dataset_dir / 'street-level' / 'image-mono' / 'image-mono-train.zip', dataset_dir / 'street-level' / 'image-mono' / 'train'),
+        # (dataset_dir / 'street-level' / 'image-mono' / 'image-mono-test.zip', dataset_dir / 'street-level' / 'image-mono' / 'test'),
     ]
 
     for zip_file, dest in tasks:

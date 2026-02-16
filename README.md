@@ -63,18 +63,37 @@ python scripts/data/process_omnicity.py \
 
 DeepRoof-2026 supports both production training from scratch and fine-tuning on custom datasets.
 
-### Production Training
-Launch training on a 4-GPU cluster (optimized for NVIDIA A100):
+### 1. Data Preparation
+Run the comprehensive preparation script to organize OmniCity data, calculate surface normals, and generate masks.
 
 ```bash
-python scripts/training/train.py --config configs/deeproof_production_swin_L.py --launcher pytorch
+# If ZIPs are already extracted (recommended if you unzipped manually)
+python scripts/data/prepare_omnicity_v2_final.py \
+    --data-root /workspace/roof/scripts/data \
+    --output-dir /workspace/roof/data/OmniCity \
+    --skip-extract
 ```
 
-### Fine-Tuning
-To fine-tune on specific urban datasets with pre-trained weights:
+### 2. Interactive Training (Notebook)
+The most recommended way to train and visualize results is using our new training notebook:
+**Location**: `notebooks/train_deeproof.ipynb`
+
+Features:
+- **Visual Data Audit**: Check image/mask/normal alignment.
+- **Switchable Modes**: Easily toggle between `fine-tune` and `scratch`.
+- **Checkpointing**: Automatically saves the `best_mIoU.pth` model.
+
+### 3. CLI Training
+Alternatively, launch training via command line (optimized for A100 multi-gpu):
 
 ```bash
-python scripts/training/train.py --config configs/deeproof_finetune_swin_L.py --launcher pytorch
+python scripts/training/train.py --config configs/deeproof_finetune_swin_L.py --amp
+```
+
+## Verification
+Ensure the geometry head is training correctly with the multi-task flow:
+```bash
+python -m pytest tests/test_geometry_flow.py
 ```
 
 ## Inference

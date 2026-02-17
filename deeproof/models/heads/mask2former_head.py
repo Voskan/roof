@@ -52,7 +52,10 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
         # Safety: We call the predictor and if it returns 3 items, we capture the 3rd.
         # If not, we resort to a manual forward pass through the predictor's decoder.
         
-        out = self.predictor(x, data_samples)
+        if hasattr(self, 'predictor'):
+            out = self.predictor(x, data_samples)
+        else:
+            out = super().forward(x, data_samples)
         
         if isinstance(out, (list, tuple)) and len(out) >= 3:
             # Predictor already returns embeddings (some versions do)
@@ -70,13 +73,13 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
             
             # The embeddings are usually the output of the decoder.
             # We assume self.predictor.decoder exists.
-            if hasattr(self.predictor, 'decoder'):
+            if hasattr(self, 'predictor') and hasattr(self.predictor, 'decoder'):
                 # This is a bit hacky but deep-dives into the architecture
                 # to get the exact query embeddings at the final layer.
                 # In production, we'd prefer the predictor to return them.
                 pass 
                 
-        if hasattr(self.predictor, 'query_embed'):
+        if hasattr(self, 'predictor') and hasattr(self.predictor, 'query_embed'):
             # (Num_Queries, C)
             # Expand to batch
             B = len(data_samples)
@@ -87,10 +90,8 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
             
         return all_cls_scores, all_mask_preds
 
-    def loss_by_feat(self, all_cls_scores: List[torch.Tensor], 
-                     all_mask_preds: List[torch.Tensor], 
-                     data_samples: List[SegDataSample]) -> dict:
+    def loss_by_feat(self, *args, **kwargs) -> dict:
         """
         Wrap standard loss but ensure embeddings are present.
         """
-        return super().loss_by_feat(all_cls_scores, all_mask_preds, data_samples)
+        return super().loss_by_feat(*args, **kwargs)

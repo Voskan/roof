@@ -74,19 +74,7 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50) # Print stats every 50 batches
 )
 
-# 6. High-Intensity Data Augmentation
-# -----------------------------------
-train_pipeline = [
-    dict(type='LoadImageFromFile'),
-    dict(type='LoadAnnotations', with_bbox=True, with_mask=True),
-    dict(type='GoogleMapsAugmentation', prob=0.8), # Maximum intensity for scratch
-    dict(type='RandomFlip', prob=0.5, direction=['horizontal', 'vertical']),
-    dict(type='PhotoMetricDistortion'),
-    dict(type='PackSegInputs')
-]
-
-train_dataloader = dict(
-    dataset=dict(
-        pipeline=train_pipeline
-    )
-)
+# 6. Data Pipeline
+# ----------------
+# DeepRoofDataset performs augmentation internally in __getitem__.
+train_dataloader = dict(dataset=dict(pipeline=[]))

@@ -364,11 +364,49 @@ class DeepRoofMask2Former(Mask2FormerBase):
         
         # Run Geometry Head on inference embeddings
         x = self.extract_feat(inputs)
-        self.decode_head.predict(x, data_samples) # This should set last_query_embeddings
-        
+        # Cache decode-head query embeddings using API-compatible calls across
+        # mmseg/mmdet variants. Geometry attachment is best-effort at inference.
         if hasattr(self.decode_head, 'last_query_embeddings'):
+            self.decode_head.last_query_embeddings = None
+        if hasattr(self.decode_head, 'last_cls_scores'):
+            self.decode_head.last_cls_scores = None
+
+        decode_ok = False
+
+        # Preferred path: our custom decode head caches embeddings in forward().
+        try:
+            self.decode_head(x, data_samples)
+            decode_ok = True
+        except Exception:
+            decode_ok = False
+
+        # Fallback for forks where only predict() exists/works.
+        if not decode_ok and hasattr(self.decode_head, 'predict'):
+            predict_fn = self.decode_head.predict
+            batch_img_metas = [
+                sample.metainfo for sample in data_samples
+            ] if data_samples is not None else []
+            test_cfg = getattr(self, 'test_cfg', None)
+            call_attempts = [
+                lambda: predict_fn(x, data_samples, test_cfg),
+                lambda: predict_fn(x, batch_img_metas, test_cfg),
+                lambda: predict_fn(x, data_samples),
+                lambda: predict_fn(x, batch_img_metas),
+            ]
+            for call in call_attempts:
+                try:
+                    call()
+                    decode_ok = True
+                    break
+                except TypeError:
+                    continue
+                except Exception:
+                    break
+
+        query_cache = getattr(self.decode_head, 'last_query_embeddings', None)
+        if query_cache is not None:
             query_embeddings = self._normalize_query_embeddings(
-                self.decode_head.last_query_embeddings,
+                query_cache,
                 batch_size=len(data_samples),
                 all_cls_scores=getattr(self.decode_head, 'last_cls_scores', []),
             )
@@ -383,10 +421,10 @@ class DeepRoofMask2Former(Mask2FormerBase):
                     continue
                 insts = results[i].pred_instances
                 if len(insts) > 0:
-                    # During inference, we don't match; we just attach the predicted 
+                    # During inference, we don't match; we just attach the predicted
                     # normal for the query that generated each instance.
                     # Note: Need to verify if 'query_indices' are stored by the head.
                     # As a simplified production fallback:
-                    insts.normals = geo_preds[i][:len(insts)] # Assuming 1-to-1 query order
+                    insts.normals = geo_preds[i][:len(insts)]  # Assuming 1-to-1 query order
                     
         return results

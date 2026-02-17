@@ -41,6 +41,35 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # We need a real-ish test for the augmentation logic
 from deeproof.datasets.roof_dataset import DeepRoofDataset
 
+
+def test_transform_vectors_supports_torch_tensor():
+    from deeproof.datasets.pipelines.augmentations import GeometricAugmentation
+
+    aug = GeometricAugmentation([])
+
+    # Horizontal flip should negate nx.
+    normals = torch.zeros((8, 8, 3), dtype=torch.float32)
+    normals[..., 0] = 1.0
+    replay_h = dict(
+        applied=True,
+        __class_fullname__='albumentations.augmentations.geometric.transforms.HorizontalFlip',
+        params={}
+    )
+    aug._transform_vectors(replay_h, normals)
+    assert torch.allclose(normals[..., 0], torch.full((8, 8), -1.0))
+
+    # 90 deg CCW should map north (0, 1, 0) to west (-1, 0, 0).
+    normals = torch.zeros((8, 8, 3), dtype=torch.float32)
+    normals[..., 1] = 1.0
+    replay_r90 = dict(
+        applied=True,
+        __class_fullname__='albumentations.augmentations.geometric.transforms.RandomRotate90',
+        params=dict(factor=1)
+    )
+    aug._transform_vectors(replay_r90, normals)
+    assert torch.allclose(normals[..., 0], torch.full((8, 8), -1.0), atol=1e-5)
+    assert torch.allclose(normals[..., 1], torch.zeros((8, 8)), atol=1e-5)
+
 def test_augmentation_consistency():
     print("Testing DeepRoofDataset augmentation consistency...")
     

@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import inspect
 import albumentations as A
+import torch
 try:
     from albumentations.pytorch import ToTensorV2
 except ImportError:
@@ -41,16 +42,20 @@ def rotate_normals(normals, angle_degrees):
         normals (np.ndarray): Normal map of shape (H, W, 3).
         angle_degrees (float): Counter-Clockwise rotation angle in degrees.
     """
-    # Albumentations uses degrees, convert to radians for numpy
+    # Albumentations uses degrees.
     theta = np.deg2rad(angle_degrees)
     cos_t = np.cos(theta)
     sin_t = np.sin(theta)
-    
-    # Extract components to avoid in-place modification errors during calculation
-    nx = normals[..., 0].copy()
-    ny = normals[..., 1].copy()
-    
-    # Apply rotation matrix
+
+    # Extract components to avoid in-place modification errors during calculation.
+    if isinstance(normals, torch.Tensor):
+        nx = normals[..., 0].clone()
+        ny = normals[..., 1].clone()
+    else:
+        nx = normals[..., 0].copy()
+        ny = normals[..., 1].copy()
+
+    # Apply rotation matrix.
     normals[..., 0] = nx * cos_t - ny * sin_t
     normals[..., 1] = nx * sin_t + ny * cos_t
     
@@ -119,8 +124,12 @@ class GeometricAugmentation(A.ReplayCompose):
             
         elif t_name == 'Transpose':
             # Swapping X and Y coordinates implies swapping nx and ny
-            nx = normals[..., 0].copy()
-            ny = normals[..., 1].copy()
+            if isinstance(normals, torch.Tensor):
+                nx = normals[..., 0].clone()
+                ny = normals[..., 1].clone()
+            else:
+                nx = normals[..., 0].copy()
+                ny = normals[..., 1].copy()
             normals[..., 0] = ny
             normals[..., 1] = nx
             

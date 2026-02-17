@@ -7,6 +7,8 @@ from torch.utils.data import Dataset
 from mmseg.registry import DATASETS
 from mmseg.datasets import BaseSegDataset
 from deeproof.datasets.pipelines.augmentations import GoogleMapsAugmentation
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 @DATASETS.register_module()
 class DeepRoofDataset(BaseSegDataset):

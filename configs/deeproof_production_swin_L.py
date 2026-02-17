@@ -222,7 +222,7 @@ param_scheduler = [
         power=0.9,
         begin=1500,
         end=100000,
-        min_lr=1e-6,
+        eta_min=1e-6,
         by_epoch=False,
     )
 ]

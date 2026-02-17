@@ -1,11 +1,32 @@
 
 import numpy as np
 import cv2
+import inspect
 import albumentations as A
 try:
     from albumentations.pytorch import ToTensorV2
 except ImportError:
     pass
+
+
+def _gauss_noise_transform(p=1.0):
+    """Create a GaussNoise transform compatible with Albumentations v1/v2."""
+    params = inspect.signature(A.GaussNoise.__init__).parameters
+    if 'std_range' in params:
+        # Albumentations 2.x API
+        return A.GaussNoise(std_range=(0.04, 0.12), mean_range=(0.0, 0.0), p=p)
+    # Albumentations 1.x API
+    return A.GaussNoise(var_limit=(10.0, 50.0), p=p)
+
+
+def _image_compression_transform(p=1.0):
+    """Create an ImageCompression transform compatible with Albumentations v1/v2."""
+    params = inspect.signature(A.ImageCompression.__init__).parameters
+    if 'quality_range' in params:
+        # Albumentations 2.x API
+        return A.ImageCompression(quality_range=(60, 90), p=p)
+    # Albumentations 1.x API
+    return A.ImageCompression(quality_lower=60, quality_upper=90, p=p)
 
 def rotate_normals(normals, angle_degrees):
     """
@@ -133,10 +154,10 @@ class GoogleMapsAugmentation(GeometricAugmentation):
             
             # Photometric Transforms: No effect on vectors
             A.OneOf([
-                A.GaussNoise(var_limit=(10.0, 50.0), p=1.0),
+                _gauss_noise_transform(p=1.0),
                 A.MotionBlur(blur_limit=5, p=1.0),
                 A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
-                A.ImageCompression(quality_lower=60, quality_upper=90, p=1.0),
+                _image_compression_transform(p=1.0),
             ], p=0.3),
             
             # Normalization and Tensor Conversion

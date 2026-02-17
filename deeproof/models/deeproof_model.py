@@ -49,6 +49,98 @@ class DeepRoofMask2Former(Mask2FormerBase):
         # Store loss weight for explicit usage if needed
         self.geometry_loss_weight = geometry_loss_weight
 
+    def _geometry_embed_dim(self) -> int:
+        if hasattr(self.geometry_head, 'embed_dims'):
+            return int(self.geometry_head.embed_dims)
+        for module in self.geometry_head.modules():
+            if isinstance(module, nn.Linear):
+                return int(module.in_features)
+        return 256
+
+    @staticmethod
+    def _to_bqc(query_like, batch_size: int) -> Optional[torch.Tensor]:
+        """Normalize query-like tensors to shape [B, Q, C]."""
+        if query_like is None:
+            return None
+        if isinstance(query_like, (list, tuple)):
+            if len(query_like) == 0:
+                return None
+            query_like = query_like[-1]
+        if not torch.is_tensor(query_like):
+            return None
+
+        query = query_like
+        if query.ndim == 4:
+            # Typical decoder output format: [num_layers, B, Q, C].
+            query = query[-1]
+        elif query.ndim == 2:
+            query = query.unsqueeze(0).expand(batch_size, -1, -1)
+
+        if query.ndim != 3:
+            return None
+        if query.shape[0] != batch_size and query.shape[1] == batch_size:
+            query = query.permute(1, 0, 2).contiguous()
+        if query.shape[0] != batch_size:
+            return None
+        return query
+
+    def _query_from_head_modules(
+        self,
+        batch_size: int,
+        ref_tensor: Optional[torch.Tensor] = None,
+    ) -> Optional[torch.Tensor]:
+        """Best-effort query embedding extraction from decode head internals."""
+        device = ref_tensor.device if torch.is_tensor(ref_tensor) else None
+        dtype = ref_tensor.dtype if torch.is_tensor(ref_tensor) else None
+
+        for owner in (self.decode_head, getattr(self.decode_head, 'predictor', None)):
+            if owner is None:
+                continue
+            for name in ('query_feat', 'query_embed'):
+                module = getattr(owner, name, None)
+                weight = getattr(module, 'weight', None)
+                if torch.is_tensor(weight) and weight.ndim == 2:
+                    query = weight
+                    if device is not None:
+                        query = query.to(device=device)
+                    if dtype is not None:
+                        query = query.to(dtype=dtype)
+                    return query.unsqueeze(0).expand(batch_size, -1, -1)
+        return None
+
+    def _normalize_query_embeddings(
+        self,
+        query_like,
+        batch_size: int,
+        all_cls_scores,
+    ) -> Optional[torch.Tensor]:
+        """Return [B, Q, C_geo] query embeddings compatible with GeometryHead."""
+        query = self._to_bqc(query_like, batch_size)
+        cls_proxy = self._to_bqc(all_cls_scores, batch_size)
+
+        if query is None:
+            query = self._query_from_head_modules(batch_size=batch_size, ref_tensor=cls_proxy)
+        if query is None:
+            return None
+
+        expected_dim = self._geometry_embed_dim()
+        if query.shape[-1] == expected_dim:
+            return query
+
+        # Prefer true query embeddings from head internals over class logits.
+        fallback = self._query_from_head_modules(batch_size=batch_size, ref_tensor=query)
+        fallback = self._to_bqc(fallback, batch_size)
+        if fallback is not None and fallback.shape[-1] == expected_dim:
+            return fallback
+
+        # Final safety: adapt dimensionality to avoid runtime shape crashes.
+        if query.shape[-1] < expected_dim:
+            pad = query.new_zeros(*query.shape[:-1], expected_dim - query.shape[-1])
+            query = torch.cat([query, pad], dim=-1)
+        else:
+            query = query[..., :expected_dim]
+        return query
+
     def _loss_by_feat_compat(
         self,
         all_cls_scores: List[torch.Tensor],
@@ -120,7 +212,14 @@ class DeepRoofMask2Former(Mask2FormerBase):
             return losses
 
         # geo_preds shape: (B, Num_Queries, 3)
-        query_embeddings = self.decode_head.last_query_embeddings
+        query_embeddings = self._normalize_query_embeddings(
+            getattr(self.decode_head, 'last_query_embeddings', None),
+            batch_size=len(data_samples),
+            all_cls_scores=all_cls_scores,
+        )
+        if query_embeddings is None:
+            losses['loss_geometry'] = all_cls_scores[0].sum() * 0.0
+            return losses
         geo_preds = self.geometry_head(query_embeddings)
         
         total_geo_loss = 0.0
@@ -222,7 +321,13 @@ class DeepRoofMask2Former(Mask2FormerBase):
         self.decode_head.predict(x, data_samples) # This should set last_query_embeddings
         
         if hasattr(self.decode_head, 'last_query_embeddings'):
-            query_embeddings = self.decode_head.last_query_embeddings
+            query_embeddings = self._normalize_query_embeddings(
+                self.decode_head.last_query_embeddings,
+                batch_size=len(data_samples),
+                all_cls_scores=getattr(self.decode_head, 'last_cls_scores', []),
+            )
+            if query_embeddings is None:
+                return results
             geo_preds = self.geometry_head(query_embeddings)
             
             for i in range(len(results)):

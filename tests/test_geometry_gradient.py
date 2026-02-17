@@ -152,3 +152,37 @@ def test_geometry_gradient():
 
 if __name__ == "__main__":
     test_geometry_gradient()
+
+
+def test_geometry_embedding_dim_mismatch_is_handled():
+    torch.manual_seed(0)
+
+    geometry_cfg = dict(type='GeometryHead', embed_dims=256, num_layers=3, hidden_dims=256)
+    model = DeepRoofMask2Former(geometry_head=geometry_cfg, geometry_loss_weight=10.0)
+
+    B, C, H, W = 2, 3, 64, 64
+    inputs = torch.randn(B, C, H, W)
+    target_n = torch.tensor([0.0, 1.0, 0.0])
+
+    data_samples = []
+    for _ in range(B):
+        ds = MagicMock()
+        ds.metainfo = dict(img_shape=(H, W))
+        ds.gt_instances = MockInstanceData(normals=target_n.unsqueeze(0))
+        data_samples.append(ds)
+
+    num_queries = 100
+    # Mimic class-logit-shaped fallback embeddings [B, Q, C_cls=4].
+    model.decode_head.return_value = (
+        [torch.randn(B, num_queries, 4)],
+        [torch.randn(B, num_queries, 16, 16)],
+    )
+    model.decode_head.assigner.assign.return_value = MockAssignResult(num_queries)
+    model.decode_head.loss_by_feat.return_value = {'loss_mask': torch.tensor(0.1)}
+    model.decode_head.last_query_embeddings = torch.randn(B, num_queries, 4, requires_grad=True)
+
+    losses = model.loss(inputs, data_samples)
+    loss_geo = losses['loss_geometry']
+    assert torch.is_tensor(loss_geo)
+    assert torch.isfinite(loss_geo)
+    loss_geo.backward()

@@ -1,8 +1,9 @@
+from typing import Any, List, Optional, Tuple
+
+import torch
 from mmseg.models.decode_heads import Mask2FormerHead
 from mmseg.registry import MODELS
 from mmseg.structures import SegDataSample
-from typing import Any, List, Tuple
-import torch
 
 @MODELS.register_module()
 class DeepRoofMask2FormerHead(Mask2FormerHead):
@@ -18,6 +19,56 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.last_query_embeddings = None
+        self.last_cls_scores = None
+
+    @staticmethod
+    def _to_bqc(tensor_like: Any, batch_size: int) -> Optional[torch.Tensor]:
+        """Normalize query-like tensors to shape [B, Q, C]."""
+        if isinstance(tensor_like, (list, tuple)):
+            if len(tensor_like) == 0:
+                return None
+            tensor_like = tensor_like[-1]
+        if not torch.is_tensor(tensor_like):
+            return None
+
+        tensor = tensor_like
+        if tensor.ndim == 4:
+            # Common mmdet layout: [num_layers, B, Q, C]
+            tensor = tensor[-1]
+        elif tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0).expand(batch_size, -1, -1)
+
+        if tensor.ndim != 3:
+            return None
+        if tensor.shape[0] != batch_size and tensor.shape[1] == batch_size:
+            tensor = tensor.permute(1, 0, 2).contiguous()
+        if tensor.shape[0] != batch_size:
+            return None
+        return tensor
+
+    def _query_from_embedding_modules(
+        self,
+        batch_size: int,
+        ref_tensor: Optional[torch.Tensor] = None,
+    ) -> Optional[torch.Tensor]:
+        """Best-effort extraction from query feature embeddings."""
+        device = ref_tensor.device if torch.is_tensor(ref_tensor) else None
+        dtype = ref_tensor.dtype if torch.is_tensor(ref_tensor) else None
+
+        for owner in (self, getattr(self, 'predictor', None)):
+            if owner is None:
+                continue
+            for name in ('query_feat', 'query_embed'):
+                module = getattr(owner, name, None)
+                weight = getattr(module, 'weight', None)
+                if torch.is_tensor(weight) and weight.ndim == 2:
+                    q = weight
+                    if device is not None:
+                        q = q.to(device=device)
+                    if dtype is not None:
+                        q = q.to(dtype=dtype)
+                    return q.unsqueeze(0).expand(batch_size, -1, -1)
+        return None
 
     def forward(self, x: List[torch.Tensor], data_samples: List[SegDataSample]) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """
@@ -52,42 +103,37 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
         # Safety: We call the predictor and if it returns 3 items, we capture the 3rd.
         # If not, we resort to a manual forward pass through the predictor's decoder.
         
+        batch_size = len(data_samples)
+
         if hasattr(self, 'predictor'):
             out = self.predictor(x, data_samples)
         else:
             out = super().forward(x, data_samples)
-        
-        if isinstance(out, (list, tuple)) and len(out) >= 3:
-            # Predictor already returns embeddings (some versions do)
-            all_cls_scores, all_mask_preds, query_embeddings = out[:3]
-            self.last_query_embeddings = query_embeddings
-            return all_cls_scores, all_mask_preds
+
+        if isinstance(out, (list, tuple)):
+            all_cls_scores, all_mask_preds = out[:2]
+            query_embeddings = out[2] if len(out) >= 3 else None
         else:
-            # Standard MMSeg predictor only returns (cls, mask)
-            # We must run the predictor's internal logic to get embeddings
-            # or monkey-patch the predictor.
-            
-            # Since we are already in a custom head, we can implement 
-            # a 'capture' mechanism for the predictor.
+            # Keep behavior permissive for custom forks.
             all_cls_scores, all_mask_preds = out
-            
-            # The embeddings are usually the output of the decoder.
-            # We assume self.predictor.decoder exists.
-            if hasattr(self, 'predictor') and hasattr(self.predictor, 'decoder'):
-                # This is a bit hacky but deep-dives into the architecture
-                # to get the exact query embeddings at the final layer.
-                # In production, we'd prefer the predictor to return them.
-                pass 
-                
-        if hasattr(self, 'predictor') and hasattr(self.predictor, 'query_embed'):
-            # (Num_Queries, C)
-            # Expand to batch
-            B = len(data_samples)
-            self.last_query_embeddings = self.predictor.query_embed.weight.unsqueeze(0).expand(B, -1, -1)
-        else:
-            # Last resort: use cls scores as a proxy for "state"
-            self.last_query_embeddings = all_cls_scores[-1]
-            
+            query_embeddings = None
+
+        self.last_cls_scores = all_cls_scores
+        query_embeddings = self._to_bqc(query_embeddings, batch_size)
+
+        # Fallback to learnable query embeddings from the head module.
+        if query_embeddings is None:
+            cls_proxy = self._to_bqc(all_cls_scores, batch_size)
+            query_embeddings = self._query_from_embedding_modules(
+                batch_size=batch_size,
+                ref_tensor=cls_proxy,
+            )
+
+        # Last resort: class logits (shape [B, Q, C_cls]) to avoid None state.
+        if query_embeddings is None:
+            query_embeddings = self._to_bqc(all_cls_scores, batch_size)
+
+        self.last_query_embeddings = query_embeddings
         return all_cls_scores, all_mask_preds
 
     def loss_by_feat(

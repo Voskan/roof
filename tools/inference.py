@@ -9,6 +9,7 @@ import rasterio
 from tqdm import tqdm
 from pathlib import Path
 import logging
+from rasterio.transform import Affine
 
 # Add project root to path for local module imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -32,7 +33,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description='DeepRoof-2026: Production Inference Pipeline')
     parser.add_argument('--config', help='Path to model configuration file', required=True)
     parser.add_argument('--checkpoint', help='Path to model weights (.pth)', required=True)
-    parser.add_argument('--input', help='Input GeoTIFF file', required=True)
+    parser.add_argument(
+        '--input',
+        help='Input image path (.tif/.tiff/.png/.jpg/.jpeg)',
+        required=True)
     parser.add_argument('--output', help='Output GeoJSON file', required=True)
     parser.add_argument('--device', default='cuda:0', help='Device used for inference (e.g., cuda:0 or cpu)')
     parser.add_argument('--tile-size', type=int, default=1024, help='Sliding window size')
@@ -40,6 +44,43 @@ def parse_args():
     parser.add_argument('--min_confidence', type=float, default=0.5, help='Confidence threshold for detections')
     parser.add_argument('--save_viz', action='store_true', help='Save visualization overlay as PNG')
     return parser.parse_args()
+
+
+def _ensure_three_channels(image: np.ndarray) -> np.ndarray:
+    if image.ndim == 2:
+        return np.stack([image, image, image], axis=-1)
+    if image.ndim == 3 and image.shape[2] == 1:
+        return np.repeat(image, 3, axis=2)
+    if image.ndim == 3 and image.shape[2] > 3:
+        return image[:, :, :3]
+    return image
+
+
+def _load_input_image(path: str):
+    """Load GeoTIFF or regular image and return RGB image + georeference metadata."""
+    input_path = Path(path)
+    suffix = input_path.suffix.lower()
+
+    if suffix in {'.tif', '.tiff'}:
+        logger.info(f"Reading input GeoTIFF: {path}")
+        with rasterio.open(path) as src:
+            image = src.read().transpose(1, 2, 0)  # H, W, C
+            transform = src.transform
+            crs = src.crs
+        image = _ensure_three_channels(image)
+        return image, transform, crs, True
+
+    logger.info(f"Reading input raster image: {path}")
+    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise FileNotFoundError(f"Could not read image from path: {path}")
+    image = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    image = _ensure_three_channels(image)
+
+    # For non-geospatial images, export polygons in pixel coordinates.
+    transform = Affine.identity()
+    crs = None
+    return image, transform, crs, False
 
 def draw_visual_overlay(image, polygons, output_path):
     """Generates a high-quality visualization of detections."""
@@ -67,15 +108,13 @@ def run_production_inference():
         logger.error(f"Failed to initialize model: {e}")
         sys.exit(1)
 
-    # 2. Load GIS Data and Metadata
-    logger.info(f"Reading input GeoTIFF: {args.input}")
-    with rasterio.open(args.input) as src:
-        image = src.read().transpose(1, 2, 0) # H, W, C
-        transform = src.transform
-        crs = src.crs # Crucial for CRS preservation
+    # 2. Load image and metadata (GeoTIFF or regular image)
+    image, transform, crs, has_georef = _load_input_image(args.input)
         
     orig_h, orig_w, _ = image.shape
     logger.info(f"Source Image: {orig_w}x{orig_h} | CRS: {crs}")
+    if not has_georef:
+        logger.info("Non-geospatial input detected. GeoJSON coordinates will be in pixel space.")
 
     # 3. Reflection Padding (Requirement: divisible tile size)
     # We pad the image so that the sliding window covers the entire area without edge truncation.
@@ -177,9 +216,9 @@ def run_production_inference():
             
             final_attributes.append(attr)
 
-    # 7. Final Output & GIS Preservation
+    # 7. Final Output
     logger.info(f"Exporting {len(final_polygons)} features to GeoJSON...")
-    # Requirement: Preservation of input CRS
+    # CRS is preserved for GeoTIFF inputs; for PNG/JPG we export pixel-space geometries.
     export_to_geojson(final_polygons, final_attributes, args.output, transform, crs)
     
     # Optional Debug Viz

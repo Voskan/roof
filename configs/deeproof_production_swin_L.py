@@ -6,7 +6,12 @@ _base_ = [
 
 # 0. Custom Imports
 custom_imports = dict(
-    imports=['deeproof.models.heads.mask2former_head', 'deeproof.models.deeproof_model', 'deeproof.models.heads.geometry_head'],
+    imports=[
+        'deeproof.models.backbones.swin_v2_compat',
+        'deeproof.models.heads.mask2former_head',
+        'deeproof.models.deeproof_model',
+        'deeproof.models.heads.geometry_head'
+    ],
     allow_failed_imports=False)
 
 # 1. Model Configuration

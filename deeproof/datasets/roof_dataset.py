@@ -145,10 +145,33 @@ class DeepRoofDataset(BaseSegDataset):
             # Applying the same spatial transform to instance_mask:
             instance_mask_aug = A.ReplayCompose.replay(augmented['replay'], image=instance_mask)['image']
             
-            img_tensor = augmented['image']          # already ToTensorV2'd
-            sem_tensor = augmented['mask'].long()
-            normal_tensor = augmented['normals'].permute(2, 0, 1).float()
-            instance_tensor = torch.from_numpy(instance_mask_aug).long()
+            img_aug = augmented['image']
+            sem_aug = augmented['mask']
+            normals_aug = augmented['normals']
+
+            if isinstance(img_aug, torch.Tensor):
+                img_tensor = img_aug.float()
+            else:
+                img_tensor = torch.from_numpy(img_aug).permute(2, 0, 1).float()
+
+            if isinstance(sem_aug, torch.Tensor):
+                sem_tensor = sem_aug.long()
+            else:
+                sem_tensor = torch.from_numpy(sem_aug).long()
+
+            if isinstance(normals_aug, torch.Tensor):
+                # Accept both HWC and CHW tensor layouts.
+                if normals_aug.ndim == 3 and normals_aug.shape[0] == 3:
+                    normal_tensor = normals_aug.float()
+                else:
+                    normal_tensor = normals_aug.permute(2, 0, 1).float()
+            else:
+                normal_tensor = torch.from_numpy(normals_aug).permute(2, 0, 1).float()
+
+            if isinstance(instance_mask_aug, torch.Tensor):
+                instance_tensor = instance_mask_aug.long()
+            else:
+                instance_tensor = torch.from_numpy(instance_mask_aug).long()
             
         else:
             # Test mode: just normalization and tensor conversion

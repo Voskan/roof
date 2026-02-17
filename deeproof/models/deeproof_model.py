@@ -1,17 +1,26 @@
-
+import inspect
 from typing import Dict, Optional, Tuple, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mmseg.models.segmentors import Mask2Former
+try:
+    # Some mmseg builds expose Mask2Former only through this module path.
+    from mmseg.models.segmentors.mask2former import Mask2Former as Mask2FormerBase
+except Exception:
+    try:
+        # Older forks may export it at package level.
+        from mmseg.models.segmentors import Mask2Former as Mask2FormerBase
+    except Exception:
+        # Official mmseg versions may only provide EncoderDecoder.
+        from mmseg.models.segmentors import EncoderDecoder as Mask2FormerBase
 from mmseg.registry import MODELS
 from mmseg.structures import SegDataSample
 from mmengine.structures import InstanceData
 from deeproof.models.losses import CosineSimilarityLoss
 
 @MODELS.register_module()
-class DeepRoofMask2Former(Mask2Former):
+class DeepRoofMask2Former(Mask2FormerBase):
     """
     DeepRoof-2026 Multi-Task Segmentor.
     
@@ -40,6 +49,26 @@ class DeepRoofMask2Former(Mask2Former):
         # Store loss weight for explicit usage if needed
         self.geometry_loss_weight = geometry_loss_weight
 
+    def _loss_by_feat_compat(
+        self,
+        all_cls_scores: List[torch.Tensor],
+        all_mask_preds: List[torch.Tensor],
+        data_samples: List[SegDataSample],
+    ) -> dict:
+        """Support both legacy and current mmseg `loss_by_feat` signatures."""
+        loss_by_feat = self.decode_head.loss_by_feat
+        param_count = len(inspect.signature(loss_by_feat).parameters)
+        if param_count >= 4:
+            batch_gt_instances = [sample.gt_instances for sample in data_samples]
+            batch_img_metas = [sample.metainfo for sample in data_samples]
+            return loss_by_feat(
+                all_cls_scores,
+                all_mask_preds,
+                batch_gt_instances,
+                batch_img_metas,
+            )
+        return loss_by_feat(all_cls_scores, all_mask_preds, data_samples)
+
     def loss(self, inputs: torch.Tensor, data_samples: List[SegDataSample]) -> dict:
         """
         Calculate multi-task losses with explicit Hungarian Matching for Geometry.
@@ -52,7 +81,7 @@ class DeepRoofMask2Former(Mask2Former):
         all_cls_scores, all_mask_preds = self.decode_head(x, data_samples)
         
         # C. Standard Losses (Segmentation & Classification)
-        losses = self.decode_head.loss_by_feat(all_cls_scores, all_mask_preds, data_samples)
+        losses = self._loss_by_feat_compat(all_cls_scores, all_mask_preds, data_samples)
         
         # D. Geometry Head Prediction & Supervision
         # We need the query embeddings from the transformer decoder.
@@ -90,8 +119,13 @@ class DeepRoofMask2Former(Mask2Former):
             
             # 1. Explicitly Invoke the Hungarian Matcher (Assigner)
             # This identifies which query (prediction) corresponds to which GT instance.
-            assign_result = self.decode_head.assigner.assign(
-                pred_instances, gt_instances, img_meta=img_meta)
+            try:
+                assign_result = self.decode_head.assigner.assign(
+                    pred_instances, gt_instances, img_meta=img_meta)
+            except TypeError:
+                # Older assigners may not accept keyword args.
+                assign_result = self.decode_head.assigner.assign(
+                    pred_instances, gt_instances, img_meta)
             
             # 2. Extract Positive Matches
             # gt_inds maps pred_idx -> (gt_idx + 1). 0 means background/no-match.
@@ -160,6 +194,8 @@ class DeepRoofMask2Former(Mask2Former):
             for i in range(len(results)):
                 # Attach normal vectors to each detected instance
                 # Mask2FormerHead.predict normally populates results[i].pred_instances
+                if not hasattr(results[i], 'pred_instances'):
+                    continue
                 insts = results[i].pred_instances
                 if len(insts) > 0:
                     # During inference, we don't match; we just attach the predicted 

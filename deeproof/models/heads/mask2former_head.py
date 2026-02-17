@@ -1,7 +1,7 @@
 from mmseg.models.decode_heads import Mask2FormerHead
 from mmseg.registry import MODELS
 from mmseg.structures import SegDataSample
-from typing import List, Tuple
+from typing import Any, List, Tuple
 import torch
 
 @MODELS.register_module()
@@ -90,8 +90,33 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
             
         return all_cls_scores, all_mask_preds
 
-    def loss_by_feat(self, *args, **kwargs) -> dict:
+    def loss_by_feat(
+        self,
+        all_cls_scores: Any,
+        all_mask_preds: Any,
+        *args,
+        **kwargs
+    ) -> dict:
         """
-        Wrap standard loss but ensure embeddings are present.
+        Compatibility wrapper for mmseg API variants.
+        
+        Some older wrappers call this as:
+        - loss_by_feat(all_cls_scores, all_mask_preds, data_samples)
+        while newer mmseg expects:
+        - loss_by_feat(all_cls_scores, all_mask_preds, batch_gt_instances, batch_img_metas)
         """
-        return super().loss_by_feat(*args, **kwargs)
+        if len(args) == 1 and not kwargs:
+            data_samples = args[0]
+            if isinstance(data_samples, list) and (
+                len(data_samples) == 0 or hasattr(data_samples[0], 'gt_instances')
+            ):
+                batch_gt_instances = [sample.gt_instances for sample in data_samples]
+                batch_img_metas = [sample.metainfo for sample in data_samples]
+                return super().loss_by_feat(
+                    all_cls_scores,
+                    all_mask_preds,
+                    batch_gt_instances,
+                    batch_img_metas,
+                )
+
+        return super().loss_by_feat(all_cls_scores, all_mask_preds, *args, **kwargs)

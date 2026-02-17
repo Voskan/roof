@@ -57,17 +57,44 @@ class DeepRoofMask2Former(Mask2FormerBase):
     ) -> dict:
         """Support both legacy and current mmseg `loss_by_feat` signatures."""
         loss_by_feat = self.decode_head.loss_by_feat
-        param_count = len(inspect.signature(loss_by_feat).parameters)
-        if param_count >= 4:
-            batch_gt_instances = [sample.gt_instances for sample in data_samples]
-            batch_img_metas = [sample.metainfo for sample in data_samples]
-            return loss_by_feat(
-                all_cls_scores,
-                all_mask_preds,
-                batch_gt_instances,
-                batch_img_metas,
-            )
-        return loss_by_feat(all_cls_scores, all_mask_preds, data_samples)
+        batch_gt_instances = [sample.gt_instances for sample in data_samples]
+        batch_img_metas = [sample.metainfo for sample in data_samples]
+
+        # Infer signature from the first non-variadic definition in the MRO.
+        # This avoids masking real runtime TypeErrors behind a fallback retry.
+        call_mode = 'instances_and_metas'
+        for cls in type(self.decode_head).__mro__:
+            func = cls.__dict__.get('loss_by_feat')
+            if func is None:
+                continue
+            try:
+                sig = inspect.signature(func)
+            except (TypeError, ValueError):
+                continue
+            params = [p for p in sig.parameters.values() if p.name != 'self']
+            if any(
+                p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                for p in params
+            ):
+                continue
+            param_names = [p.name for p in params]
+            if 'data_samples' in param_names:
+                call_mode = 'data_samples'
+            else:
+                call_mode = 'instances_and_metas'
+            break
+
+        if call_mode == 'data_samples':
+            return loss_by_feat(all_cls_scores, all_mask_preds, data_samples)
+
+        # Modern signature:
+        # loss_by_feat(all_cls_scores, all_mask_preds, batch_gt_instances, batch_img_metas)
+        return loss_by_feat(
+            all_cls_scores,
+            all_mask_preds,
+            batch_gt_instances,
+            batch_img_metas,
+        )
 
     def loss(self, inputs: torch.Tensor, data_samples: List[SegDataSample]) -> dict:
         """

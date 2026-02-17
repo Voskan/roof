@@ -72,6 +72,8 @@ class GeometricAugmentation(A.ReplayCompose):
         if 'additional_targets' not in kwargs:
             kwargs['additional_targets'] = {}
         kwargs['additional_targets']['normals'] = 'mask'
+        # Keep instance masks aligned with the exact same geometric transform.
+        kwargs['additional_targets']['instance_mask'] = 'mask'
         
         super().__init__(transforms, **kwargs)
 

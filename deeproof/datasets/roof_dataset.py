@@ -128,22 +128,15 @@ class DeepRoofDataset(BaseSegDataset):
             # We pass image, mask (semantic), and normals to the augmentor.
             # GoogleMapsAugmentation is a GeometricAugmentation wrapper that
             # handles the replay logic for vector rotations of 'normals'.
-            # We also need to handle 'instance_mask'.
-            
-            # Temporary hack: Treat instance_mask as another 'mask' by passing it 
-            # as an additional target if not already configured.
-            # But the most robust way is to use the augmentor as intended.
+            # Instance mask is also passed as an additional target.
             
             augmented = self.augmentor(
                 image=img, 
                 mask=semantic_mask,
-                normals=normals
+                normals=normals,
+                instance_mask=instance_mask
             )
-            
-            # NOTE: GoogleMapsAugmentation currently only has 'mask' and 'normals' 
-            # as additional targets. We need to ensure instance_mask is also transformed.
-            # Applying the same spatial transform to instance_mask:
-            instance_mask_aug = A.ReplayCompose.replay(augmented['replay'], image=instance_mask)['image']
+            instance_mask_aug = augmented['instance_mask']
             
             img_aug = augmented['image']
             sem_aug = augmented['mask']

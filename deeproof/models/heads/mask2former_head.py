@@ -1,4 +1,4 @@
-from mmseg.models.decode_heads.mask2former_head import Mask2FormerHead
+from mmseg.models.decode_heads import Mask2FormerHead
 from mmseg.registry import MODELS
 from mmseg.structures import SegDataSample
 from typing import List, Tuple

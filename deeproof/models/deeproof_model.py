@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mmseg.models.segmentors.mask2former import Mask2Former
+from mmseg.models.segmentors import Mask2Former
 from mmseg.registry import MODELS
 from mmseg.structures import SegDataSample
 from mmengine.structures import InstanceData

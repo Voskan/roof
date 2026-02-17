@@ -17,7 +17,9 @@ model = dict(
         embed_dims=192,
         depths=[2, 2, 18, 2],
         num_heads=[6, 12, 24, 48],
-        window_size=24,  # Optimized for 1024x1024 input (1024/32 = 32 patches, 24 covers ~75% of image width at deepest layer)
+        # Keep window_size aligned with the official pretrained checkpoint
+        # (swin_large_patch4_window12_384_22k) to avoid state_dict shape mismatches.
+        window_size=12,
         mlp_ratio=4,
         qkv_bias=True,
         qk_scale=None,

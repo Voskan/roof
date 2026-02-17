@@ -5,6 +5,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 try:
+    from mmengine.config import ConfigDict
+except Exception:  # pragma: no cover - fallback for lightweight test envs
+    ConfigDict = None
+try:
     import cv2
 except Exception:  # pragma: no cover - optional in minimal environments
     cv2 = None
@@ -44,6 +48,10 @@ class DeepRoofMask2Former(Mask2FormerBase):
                   geometry_loss_weight: float = 5.0,
                   **kwargs):
         super().__init__(**kwargs)
+
+        # Ensure inference config is always present and compatible with both
+        # `.get(...)` and attribute-style (`.mode`) access across mmseg versions.
+        self.test_cfg = self._normalize_test_cfg(getattr(self, 'test_cfg', None))
         
         # 1. Initialize Geometry Head (MLP that takes query embeddings)
         self.geometry_head = MODELS.build(geometry_head)
@@ -53,6 +61,39 @@ class DeepRoofMask2Former(Mask2FormerBase):
         
         # Store loss weight for explicit usage if needed
         self.geometry_loss_weight = geometry_loss_weight
+
+    @staticmethod
+    def _normalize_test_cfg(test_cfg):
+        default_cfg = dict(mode='whole')
+
+        if test_cfg is None:
+            if ConfigDict is not None:
+                return ConfigDict(default_cfg)
+            return default_cfg
+
+        if isinstance(test_cfg, dict):
+            merged = dict(default_cfg)
+            merged.update(test_cfg)
+            if ConfigDict is not None:
+                return ConfigDict(merged)
+            return merged
+
+        # Object-style configs. Ensure `.mode` exists.
+        if not hasattr(test_cfg, 'mode'):
+            try:
+                setattr(test_cfg, 'mode', 'whole')
+            except Exception:
+                if ConfigDict is not None:
+                    return ConfigDict(default_cfg)
+                return default_cfg
+
+        # If object has no dict-like `.get`, convert to ConfigDict when possible.
+        if not hasattr(test_cfg, 'get'):
+            if ConfigDict is not None:
+                return ConfigDict(dict(mode=getattr(test_cfg, 'mode', 'whole')))
+            return dict(mode=getattr(test_cfg, 'mode', 'whole'))
+
+        return test_cfg
 
     def _geometry_embed_dim(self) -> int:
         if hasattr(self.geometry_head, 'embed_dims'):
@@ -419,6 +460,8 @@ class DeepRoofMask2Former(Mask2FormerBase):
         """
         Implementation of inference with geometry predictions.
         """
+        # Keep inference path robust if external code mutates/clears test_cfg.
+        self.test_cfg = self._normalize_test_cfg(getattr(self, 'test_cfg', None))
         results = super().predict(inputs, data_samples)
 
         # Some mmseg variants return semantic maps only. Build instance outputs

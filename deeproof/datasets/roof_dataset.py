@@ -82,7 +82,8 @@ class DeepRoofDataset(BaseSegDataset):
         
         # 1. Load Image
         img = cv2.imread(data_info['img_path'])
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Keep BGR here and let SegDataPreProcessor handle bgr_to_rgb conversion.
+        # This keeps train/inference color pipeline consistent with mmseg defaults.
         
         # 2. Load Instance Mask (uint16)
         instance_mask = cv2.imread(data_info['seg_map_path'], cv2.IMREAD_UNCHANGED)

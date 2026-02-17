@@ -33,6 +33,7 @@ model = dict(
     type='DeepRoofMask2Former', # Our Multi-Task Model
     data_preprocessor=data_preprocessor,
     neck=None,
+    test_cfg=dict(mode='whole'),
     
     # Custom Geometry Head
     geometry_head=dict(

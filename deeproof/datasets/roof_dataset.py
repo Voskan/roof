@@ -3,12 +3,31 @@ import numpy as np
 import cv2
 from typing import Dict, List, Optional, Callable, Union
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from mmseg.registry import DATASETS
 from mmseg.datasets import BaseSegDataset
 from deeproof.datasets.pipelines.augmentations import GoogleMapsAugmentation
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+
+
+class _TensorMasks:
+    """Minimal mask wrapper that mimics mmdet mask objects for assigners."""
+
+    def __init__(self, masks: torch.Tensor):
+        self._masks = masks
+
+    def to_tensor(self, dtype=None, device=None):
+        masks = self._masks
+        if device is not None:
+            masks = masks.to(device)
+        if dtype is not None:
+            masks = masks.to(dtype=dtype)
+        return masks
+
+    def __len__(self):
+        return int(self._masks.shape[0])
 
 @DATASETS.register_module()
 class DeepRoofDataset(BaseSegDataset):
@@ -179,10 +198,83 @@ class DeepRoofDataset(BaseSegDataset):
             instance_tensor = torch.from_numpy(instance_mask).long()
             normal_tensor = torch.from_numpy(normals).permute(2, 0, 1).float()
 
-        return dict(
+        out = dict(
             img=img_tensor,
             gt_semantic_seg=sem_tensor,
             gt_instance_seg=instance_tensor,
             gt_normals=normal_tensor,
             img_metas=data_info
         )
+
+        # Build MMEngine-style sample package expected by SegDataPreProcessor.
+        # Keep legacy keys above for backward compatibility with existing tests/utilities.
+        try:
+            from mmseg.structures import SegDataSample
+            from mmengine.structures import PixelData, InstanceData
+
+            H, W = int(img_tensor.shape[-2]), int(img_tensor.shape[-1])
+            sem_map = sem_tensor.squeeze(0) if sem_tensor.ndim == 3 else sem_tensor
+            inst_map = instance_tensor.squeeze(0) if instance_tensor.ndim == 3 else instance_tensor
+
+            data_sample = SegDataSample()
+            data_sample.set_metainfo(
+                dict(
+                    img_shape=(H, W),
+                    ori_shape=(H, W),
+                    pad_shape=(H, W),
+                    img_id=data_info.get('img_id', '')
+                ))
+
+            data_sample.gt_sem_seg = PixelData(data=sem_map.unsqueeze(0).long())
+            data_sample.gt_normals = PixelData(data=normal_tensor.float())
+
+            gt_instances = InstanceData()
+            inst_ids = torch.unique(inst_map)
+            inst_ids = inst_ids[inst_ids > 0]
+
+            if inst_ids.numel() > 0:
+                masks = torch.stack([(inst_map == i) for i in inst_ids], dim=0).bool()
+                labels = []
+                normals_per_inst = []
+                for m in masks:
+                    sem_vals = sem_map[m]
+                    if sem_vals.numel() == 0:
+                        label = 1
+                    else:
+                        cls_ids, counts = torch.unique(sem_vals, return_counts=True)
+                        fg = cls_ids > 0
+                        if fg.any():
+                            cls_ids = cls_ids[fg]
+                            counts = counts[fg]
+                        label = int(cls_ids[counts.argmax()].item()) if cls_ids.numel() > 0 else 1
+                    labels.append(label)
+
+                    avg_n = normal_tensor[:, m].mean(dim=1)
+                    avg_n = F.normalize(avg_n, p=2, dim=0)
+                    normals_per_inst.append(avg_n)
+
+                labels = torch.tensor(labels, dtype=torch.long)
+                normals_inst = torch.stack(normals_per_inst, dim=0).float()
+            else:
+                masks = torch.zeros((0, H, W), dtype=torch.bool)
+                labels = torch.zeros((0,), dtype=torch.long)
+                normals_inst = torch.zeros((0, 3), dtype=torch.float32)
+
+            try:
+                from mmdet.structures.mask import BitmapMasks
+                gt_instances.masks = BitmapMasks(
+                    masks.cpu().numpy().astype(np.uint8), H, W)
+            except Exception:
+                gt_instances.masks = _TensorMasks(masks)
+
+            gt_instances.labels = labels
+            gt_instances.normals = normals_inst
+            data_sample.gt_instances = gt_instances
+
+            out['inputs'] = img_tensor
+            out['data_samples'] = data_sample
+        except Exception:
+            # Fallback for lightweight test environments with mocked mmseg/mmengine.
+            pass
+
+        return out

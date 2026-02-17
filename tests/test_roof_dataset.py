@@ -10,6 +10,7 @@ import tempfile
 mmseg_mod = types.ModuleType('mmseg')
 mmseg_registry_mod = types.ModuleType('mmseg.registry')
 mmseg_datasets_mod = types.ModuleType('mmseg.datasets')
+mmseg_structures_mod = types.ModuleType('mmseg.structures')
 mmengine_mod = types.ModuleType('mmengine')
 mmengine_structures_mod = types.ModuleType('mmengine.structures')
 
@@ -26,12 +27,33 @@ class DummyBaseSegDataset:
         return self.data_list[idx]
 
 
+class DummySegDataSample:
+    def __init__(self):
+        self.metainfo = {}
+
+    def set_metainfo(self, info):
+        self.metainfo = info
+
+
+class DummyPixelData:
+    def __init__(self, data=None):
+        self.data = data
+
+
+class DummyInstanceData:
+    pass
+
+
 mmseg_registry_mod.DATASETS = DummyRegistry()
 mmseg_datasets_mod.BaseSegDataset = DummyBaseSegDataset
+mmseg_structures_mod.SegDataSample = DummySegDataSample
+mmengine_structures_mod.PixelData = DummyPixelData
+mmengine_structures_mod.InstanceData = DummyInstanceData
 
 sys.modules['mmseg'] = mmseg_mod
 sys.modules['mmseg.registry'] = mmseg_registry_mod
 sys.modules['mmseg.datasets'] = mmseg_datasets_mod
+sys.modules['mmseg.structures'] = mmseg_structures_mod
 sys.modules['mmengine'] = mmengine_mod
 sys.modules['mmengine.structures'] = mmengine_structures_mod
 
@@ -132,6 +154,9 @@ def test_augmentation_consistency():
         mask_aug = mask_aug.squeeze(0)
     assert np.any(mask_aug[:, 106:206] == 1), "Instance mask horizontal flip failed"
     assert not np.any(mask_aug[:, 50:100] == 1), "Instance mask old position not cleared after flip"
+    assert 'data_samples' in item, "MMEngine data sample payload missing"
+    assert torch.is_tensor(item['data_samples'].gt_instances.masks), \
+        "gt_instances.masks must be tensor for mmdet Mask2Former compatibility"
     
     # Check normal vector rotation
     # Original: (0, 1, 0) [North]. Horiz flip (mirror across Y-axis) -> nx' = -nx

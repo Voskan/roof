@@ -176,7 +176,14 @@ class DeepRoofMask2Former(Mask2FormerBase):
                 # Fallback: Extract normals from dense ground truth map
                 # (This is more computationally expensive but robust)
                 dense_normals = data_samples[i].gt_normals.data # (3, H, W)
-                gt_masks = gt_instances.masks.to_tensor(dtype=torch.bool, device=inputs.device)
+                raw_masks = gt_instances.masks
+                if hasattr(raw_masks, 'to_tensor'):
+                    gt_masks = raw_masks.to_tensor(dtype=torch.bool, device=inputs.device)
+                else:
+                    gt_masks = raw_masks
+                    if not torch.is_tensor(gt_masks):
+                        gt_masks = torch.as_tensor(gt_masks)
+                    gt_masks = gt_masks.to(device=inputs.device, dtype=torch.bool)
                 
                 gt_normals_list = []
                 for idx in matched_tgt_idx:

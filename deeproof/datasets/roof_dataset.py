@@ -1,7 +1,7 @@
 import os.path as osp
 import numpy as np
 import cv2
-from typing import Dict, List, Optional, Callable, Union
+from typing import Dict, List, Optional
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
@@ -11,23 +11,6 @@ from deeproof.datasets.pipelines.augmentations import GoogleMapsAugmentation
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-
-class _TensorMasks:
-    """Minimal mask wrapper that mimics mmdet mask objects for assigners."""
-
-    def __init__(self, masks: torch.Tensor):
-        self._masks = masks
-
-    def to_tensor(self, dtype=None, device=None):
-        masks = self._masks
-        if device is not None:
-            masks = masks.to(device)
-        if dtype is not None:
-            masks = masks.to(dtype=dtype)
-        return masks
-
-    def __len__(self):
-        return int(self._masks.shape[0])
 
 @DATASETS.register_module()
 class DeepRoofDataset(BaseSegDataset):
@@ -260,12 +243,10 @@ class DeepRoofDataset(BaseSegDataset):
                 labels = torch.zeros((0,), dtype=torch.long)
                 normals_inst = torch.zeros((0, 3), dtype=torch.float32)
 
-            try:
-                from mmdet.structures.mask import BitmapMasks
-                gt_instances.masks = BitmapMasks(
-                    masks.cpu().numpy().astype(np.uint8), H, W)
-            except Exception:
-                gt_instances.masks = _TensorMasks(masks)
+            # mmdet Mask2Former head expects tensor-like gt masks and directly
+            # applies tensor ops (e.g. unsqueeze). Using BitmapMasks here breaks
+            # that path on recent mmdet versions.
+            gt_instances.masks = masks
 
             gt_instances.labels = labels
             gt_instances.normals = normals_inst

@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mmseg.registry import MODELS
-from mmseg.models.losses import accuracy
 
 @MODELS.register_module()
 class DeepRoofLosses(nn.Module):
@@ -20,7 +19,7 @@ class DeepRoofLosses(nn.Module):
     def __init__(self):
         super().__init__()
 
-@MODELS.register_module()
+@MODELS.register_module(name='DeepRoofDiceLoss')
 class DiceLoss(nn.Module):
     """
     Dice Loss for Segmentation.
@@ -63,7 +62,7 @@ class DiceLoss(nn.Module):
             
         return loss * self.loss_weight
 
-@MODELS.register_module()
+@MODELS.register_module(name='DeepRoofCrossEntropyLoss')
 class CrossEntropyLoss(nn.Module):
     """
     Standard Cross Entropy Loss.

@@ -35,6 +35,7 @@ optim_wrapper = dict(
 # 4. Long-Term Schedule (EPOCH BASED)
 # ----------------------------------
 train_cfg = dict(
+    _delete_=True,
     type='EpochBasedTrainLoop', 
     max_epochs=150,      # ~160k iterations adjusted to epochs based on OmniCity size
     val_interval=1       # Evaluate and print results every single epoch

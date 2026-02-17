@@ -183,7 +183,7 @@ class DeepRoofDataset(BaseSegDataset):
             img_metas=data_info
         )
 
-        # Build MMEngine-style sample package expected by SegDataPreProcessor.
+        # Build MMEngine-style sample package expected by SegDataPreProcessor
         # Keep legacy keys above for backward compatibility with existing tests/utilities.
         try:
             from mmseg.structures import SegDataSample

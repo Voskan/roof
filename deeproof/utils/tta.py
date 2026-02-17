@@ -2,9 +2,49 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+import cv2
 from mmengine.structures import InstanceData
 from mmseg.structures import SegDataSample
 from torchvision.ops import nms
+
+
+def _instances_from_semantic(sem_map: torch.Tensor, min_area: int = 64) -> InstanceData:
+    """Fallback conversion from semantic map to instance-style predictions."""
+    if sem_map.ndim == 3:
+        sem_map = sem_map.squeeze(0)
+    sem_map = sem_map.long()
+    device = sem_map.device
+    H, W = int(sem_map.shape[-2]), int(sem_map.shape[-1])
+
+    masks, labels, scores = [], [], []
+    for cls_id in torch.unique(sem_map).tolist():
+        cls_id = int(cls_id)
+        if cls_id <= 0 or cls_id == 255:
+            continue
+        cls_mask = (sem_map == cls_id)
+        if int(cls_mask.sum().item()) < min_area:
+            continue
+        comp_map = cls_mask.detach().cpu().numpy().astype(np.uint8)
+        num_comp, comp_labels = cv2.connectedComponents(comp_map, connectivity=8)
+        for comp_idx in range(1, int(num_comp)):
+            comp = (comp_labels == comp_idx)
+            if int(comp.sum()) < min_area:
+                continue
+            masks.append(torch.from_numpy(comp).to(device=device))
+            labels.append(cls_id)
+            scores.append(1.0)
+
+    out = InstanceData()
+    if masks:
+        out.masks = torch.stack([m.bool() for m in masks], dim=0)
+        out.labels = torch.tensor(labels, dtype=torch.long, device=device)
+        out.scores = torch.tensor(scores, dtype=torch.float32, device=device)
+    else:
+        out.masks = torch.zeros((0, H, W), dtype=torch.bool, device=device)
+        out.labels = torch.zeros((0,), dtype=torch.long, device=device)
+        out.scores = torch.zeros((0,), dtype=torch.float32, device=device)
+    return out
+
 
 def apply_tta(model, 
               image: np.ndarray, 
@@ -56,7 +96,7 @@ def apply_tta(model,
     batch_imgs.append(torch.flip(img_tensor, dims=[2])) # dim 2 is Width
     
     # Stack
-    batch_stack = torch.stack(batch_imgs).to(device)
+    batch_stack = torch.stack(batch_imgs)
     
     # 2. Run Inference
     # Create dummy samples
@@ -64,14 +104,27 @@ def apply_tta(model,
     
     print(f"Running TTA Inference on batch of {len(batch_stack)}...")
     with torch.no_grad():
-        results = model.predict(batch_stack, batch_samples)
+        # Use standard test_step so model data_preprocessor runs exactly as in
+        # normal mmseg inference (normalization, padding, device transfer).
+        batch_data = dict(
+            inputs=[img for img in batch_stack],
+            data_samples=batch_samples,
+        )
+        results = model.test_step(batch_data)
         
     all_pred_instances = []
     
     # 3. Inverse Transformations & Collect
     for i, res in enumerate(results):
         transform = transforms[i]
-        preds = res.pred_instances
+        preds = getattr(res, 'pred_instances', None)
+        if preds is None or len(preds) == 0:
+            sem = getattr(res, 'pred_sem_seg', None)
+            sem_data = getattr(sem, 'data', None) if sem is not None else None
+            if torch.is_tensor(sem_data):
+                preds = _instances_from_semantic(sem_data)
+            else:
+                continue
         
         if len(preds) == 0:
             continue

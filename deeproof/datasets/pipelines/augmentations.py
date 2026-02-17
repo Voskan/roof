@@ -170,10 +170,9 @@ class GoogleMapsAugmentation(GeometricAugmentation):
                 A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
                 _image_compression_transform(p=1.0),
             ], p=0.3),
-            
-            # Normalization and Tensor Conversion
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2()
+
+            # Keep raw image scale here. Normalization is handled by
+            # SegDataPreProcessor in the model config to avoid double-normalization.
         ]
         super().__init__(pipeline)
 

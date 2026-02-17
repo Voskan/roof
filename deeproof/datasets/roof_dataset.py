@@ -8,8 +8,6 @@ from torch.utils.data import Dataset
 from mmseg.registry import DATASETS
 from mmseg.datasets import BaseSegDataset
 from deeproof.datasets.pipelines.augmentations import GoogleMapsAugmentation
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 
 
 @DATASETS.register_module()
@@ -169,14 +167,9 @@ class DeepRoofDataset(BaseSegDataset):
                 instance_tensor = torch.from_numpy(instance_mask_aug).long()
             
         else:
-            # Test mode: just normalization and tensor conversion
-            # Using a basic pipeline for consistency
-            eval_transform = A.Compose([
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                ToTensorV2()
-            ])
-            transformed = eval_transform(image=img)
-            img_tensor = transformed['image']
+            # Test mode: keep raw scale and let SegDataPreProcessor apply
+            # normalization once for consistent train/infer behavior.
+            img_tensor = torch.from_numpy(img).permute(2, 0, 1).float()
             sem_tensor = torch.from_numpy(semantic_mask).long()
             instance_tensor = torch.from_numpy(instance_mask).long()
             normal_tensor = torch.from_numpy(normals).permute(2, 0, 1).float()

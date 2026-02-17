@@ -1,8 +1,13 @@
 import inspect
 from typing import Dict, Optional, Tuple, List
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+try:
+    import cv2
+except Exception:  # pragma: no cover - optional in minimal environments
+    cv2 = None
 
 try:
     # Some mmseg builds expose Mask2Former only through this module path.
@@ -149,6 +154,60 @@ class DeepRoofMask2Former(Mask2FormerBase):
         elif not torch.is_tensor(masks):
             masks = torch.as_tensor(masks)
         return masks.to(device=device)
+
+    @staticmethod
+    def _instances_from_semantic(
+        sem_data: torch.Tensor,
+        min_area: int = 64,
+    ) -> InstanceData:
+        """Build instance predictions from semantic map as inference fallback."""
+        if sem_data.ndim == 3:
+            # Typical shape from SegDataSample: [1, H, W].
+            sem_map = sem_data.squeeze(0)
+        else:
+            sem_map = sem_data
+        sem_map = sem_map.long()
+        device = sem_map.device
+        H, W = int(sem_map.shape[-2]), int(sem_map.shape[-1])
+
+        masks: List[torch.Tensor] = []
+        labels: List[int] = []
+        scores: List[float] = []
+
+        for cls_id in torch.unique(sem_map).tolist():
+            cls_id = int(cls_id)
+            if cls_id <= 0 or cls_id == 255:
+                continue
+            cls_mask = (sem_map == cls_id)
+            if int(cls_mask.sum().item()) < min_area:
+                continue
+
+            if cv2 is None:
+                masks.append(cls_mask.bool())
+                labels.append(cls_id)
+                scores.append(1.0)
+                continue
+
+            comp_map = cls_mask.detach().cpu().numpy().astype(np.uint8)
+            num_comp, comp_labels = cv2.connectedComponents(comp_map, connectivity=8)
+            for comp_idx in range(1, int(num_comp)):
+                comp = (comp_labels == comp_idx)
+                if int(comp.sum()) < min_area:
+                    continue
+                masks.append(torch.from_numpy(comp).to(device=device))
+                labels.append(cls_id)
+                scores.append(1.0)
+
+        pred_instances = InstanceData()
+        if masks:
+            pred_instances.masks = torch.stack([m.bool() for m in masks], dim=0)
+            pred_instances.labels = torch.tensor(labels, dtype=torch.long, device=device)
+            pred_instances.scores = torch.tensor(scores, dtype=torch.float32, device=device)
+        else:
+            pred_instances.masks = torch.zeros((0, H, W), dtype=torch.bool, device=device)
+            pred_instances.labels = torch.zeros((0,), dtype=torch.long, device=device)
+            pred_instances.scores = torch.zeros((0,), dtype=torch.float32, device=device)
+        return pred_instances
 
     def _prepare_gt_instances_for_assigner(
         self,
@@ -361,6 +420,18 @@ class DeepRoofMask2Former(Mask2FormerBase):
         Implementation of inference with geometry predictions.
         """
         results = super().predict(inputs, data_samples)
+
+        # Some mmseg variants return semantic maps only. Build instance outputs
+        # from connected components so inference/post-processing can proceed.
+        for sample in results:
+            pred_instances = getattr(sample, 'pred_instances', None)
+            has_instances = pred_instances is not None and len(pred_instances) > 0
+            if has_instances:
+                continue
+            pred_sem = getattr(sample, 'pred_sem_seg', None)
+            sem_data = getattr(pred_sem, 'data', None) if pred_sem is not None else None
+            if torch.is_tensor(sem_data):
+                sample.pred_instances = self._instances_from_semantic(sem_data)
         
         # Run Geometry Head on inference embeddings
         x = self.extract_feat(inputs)
@@ -425,6 +496,18 @@ class DeepRoofMask2Former(Mask2FormerBase):
                     # normal for the query that generated each instance.
                     # Note: Need to verify if 'query_indices' are stored by the head.
                     # As a simplified production fallback:
-                    insts.normals = geo_preds[i][:len(insts)]  # Assuming 1-to-1 query order
+                    pred_normals = geo_preds[i]
+                    if pred_normals.shape[0] < len(insts):
+                        if pred_normals.shape[0] == 0:
+                            pad = torch.zeros(
+                                (len(insts), 3),
+                                dtype=pred_normals.dtype,
+                                device=pred_normals.device)
+                            pred_normals = pad
+                        else:
+                            repeat_n = len(insts) - pred_normals.shape[0]
+                            pad = pred_normals[-1:].repeat(repeat_n, 1)
+                            pred_normals = torch.cat([pred_normals, pad], dim=0)
+                    insts.normals = pred_normals[:len(insts)]
                     
         return results

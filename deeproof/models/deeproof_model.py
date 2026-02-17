@@ -141,6 +141,47 @@ class DeepRoofMask2Former(Mask2FormerBase):
             query = query[..., :expected_dim]
         return query
 
+    @staticmethod
+    def _masks_to_tensor(masks, device: torch.device) -> torch.Tensor:
+        """Convert mask containers to a [N, H, W] tensor on target device."""
+        if hasattr(masks, 'to_tensor'):
+            masks = masks.to_tensor(device=device)
+        elif not torch.is_tensor(masks):
+            masks = torch.as_tensor(masks)
+        return masks.to(device=device)
+
+    def _prepare_gt_instances_for_assigner(
+        self,
+        gt_instances: InstanceData,
+        pred_mask_shape: torch.Size,
+        device: torch.device,
+    ) -> InstanceData:
+        """Resize GT masks to prediction mask resolution for Hungarian costs."""
+        prepared = InstanceData()
+
+        gt_masks = self._masks_to_tensor(gt_instances.masks, device=device)
+        if gt_masks.ndim == 2:
+            gt_masks = gt_masks.unsqueeze(0)
+
+        labels = getattr(gt_instances, 'labels', None)
+        if labels is None:
+            labels = torch.zeros((int(gt_masks.shape[0]),), dtype=torch.long, device=device)
+        elif not torch.is_tensor(labels):
+            labels = torch.as_tensor(labels, dtype=torch.long, device=device)
+        else:
+            labels = labels.to(device=device, dtype=torch.long)
+
+        target_h, target_w = int(pred_mask_shape[-2]), int(pred_mask_shape[-1])
+        if gt_masks.shape[-2:] != (target_h, target_w):
+            gt_masks = F.interpolate(
+                gt_masks.float().unsqueeze(1),
+                size=(target_h, target_w),
+                mode='nearest',
+            ).squeeze(1)
+        prepared.labels = labels
+        prepared.masks = gt_masks.float()
+        return prepared
+
     def _loss_by_feat_compat(
         self,
         all_cls_scores: List[torch.Tensor],
@@ -242,16 +283,21 @@ class DeepRoofMask2Former(Mask2FormerBase):
             pred_instances = InstanceData()
             pred_instances.scores = img_cls_pred
             pred_instances.masks = img_mask_pred
+            gt_instances_for_assign = self._prepare_gt_instances_for_assigner(
+                gt_instances=gt_instances,
+                pred_mask_shape=img_mask_pred.shape,
+                device=inputs.device,
+            )
             
             # 1. Explicitly Invoke the Hungarian Matcher (Assigner)
             # This identifies which query (prediction) corresponds to which GT instance.
             try:
                 assign_result = self.decode_head.assigner.assign(
-                    pred_instances, gt_instances, img_meta=img_meta)
+                    pred_instances, gt_instances_for_assign, img_meta=img_meta)
             except TypeError:
                 # Older assigners may not accept keyword args.
                 assign_result = self.decode_head.assigner.assign(
-                    pred_instances, gt_instances, img_meta)
+                    pred_instances, gt_instances_for_assign, img_meta)
             
             # 2. Extract Positive Matches
             # gt_inds maps pred_idx -> (gt_idx + 1). 0 means background/no-match.

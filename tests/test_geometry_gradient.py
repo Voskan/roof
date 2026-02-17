@@ -186,3 +186,41 @@ def test_geometry_embedding_dim_mismatch_is_handled():
     assert torch.is_tensor(loss_geo)
     assert torch.isfinite(loss_geo)
     loss_geo.backward()
+
+
+def test_assigner_receives_size_aligned_masks():
+    torch.manual_seed(0)
+
+    geometry_cfg = dict(type='GeometryHead', embed_dims=256, num_layers=3, hidden_dims=256)
+    model = DeepRoofMask2Former(geometry_head=geometry_cfg, geometry_loss_weight=10.0)
+
+    B, C, H, W = 2, 3, 128, 128
+    inputs = torch.randn(B, C, H, W)
+    target_n = torch.tensor([0.0, 0.0, 1.0])
+
+    data_samples = []
+    for _ in range(B):
+        ds = MagicMock()
+        ds.metainfo = dict(img_shape=(H, W))
+        ds.gt_instances = MockInstanceData(normals=target_n.unsqueeze(0))
+        # Simulate larger GT mask resolution than decoder mask resolution.
+        ds.gt_instances.masks.to_tensor = lambda **kwargs: torch.ones(1, 256, 256, dtype=torch.bool)
+        data_samples.append(ds)
+
+    num_queries = 100
+    pred_h, pred_w = 64, 64
+    model.decode_head.return_value = (
+        [torch.randn(B, num_queries, 3)],
+        [torch.randn(B, num_queries, pred_h, pred_w)],
+    )
+    model.decode_head.loss_by_feat.return_value = {'loss_mask': torch.tensor(0.1)}
+    model.decode_head.last_query_embeddings = torch.randn(B, num_queries, 256, requires_grad=True)
+
+    def _assign_side_effect(pred_instances, gt_instances, img_meta=None):
+        assert pred_instances.masks.shape[-2:] == gt_instances.masks.shape[-2:]
+        return MockAssignResult(pred_instances.scores.shape[0])
+
+    model.decode_head.assigner.assign.side_effect = _assign_side_effect
+
+    losses = model.loss(inputs, data_samples)
+    assert torch.is_tensor(losses['loss_geometry'])

@@ -77,15 +77,15 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
                 pass 
                 
         if hasattr(self.predictor, 'query_embed'):
-             # (Num_Queries, C)
-             # Expand to batch
-             B = len(data_samples)
-             self.last_query_embeddings = self.predictor.query_embed.weight.unsqueeze(0).expand(B, -1, -1)
+            # (Num_Queries, C)
+            # Expand to batch
+            B = len(data_samples)
+            self.last_query_embeddings = self.predictor.query_embed.weight.unsqueeze(0).expand(B, -1, -1)
         else:
-             # Last resort: use cls scores as a proxy for "state"
-             self.last_query_embeddings = all_cls_scores[-1]
+            # Last resort: use cls scores as a proxy for "state"
+            self.last_query_embeddings = all_cls_scores[-1]
             
-            return all_cls_scores, all_mask_preds
+        return all_cls_scores, all_mask_preds
 
     def loss_by_feat(self, all_cls_scores: List[torch.Tensor], 
                      all_mask_preds: List[torch.Tensor], 

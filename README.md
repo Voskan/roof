@@ -83,12 +83,14 @@ Features:
 - **Switchable Modes**: Easily toggle between `fine-tune` and `scratch`.
 - **Checkpointing**: Automatically saves the `best_mIoU.pth` model.
 
-### 3. CLI Training
+### 3. CLI Training (Advanced)
 Alternatively, launch training via command line (optimized for A100 multi-gpu):
 
 ```bash
-python scripts/training/train.py --config configs/deeproof_finetune_swin_L.py --amp
+python scripts/training/train.py --config configs/deeproof_scratch_swin_L.py --amp
 ```
+
+*Note: The config `deeproof_scratch_swin_L.py` is currently configured for **fine-tuning** (resuming from iter 40k).*
 
 ## Verification
 Ensure the geometry head is training correctly with the multi-task flow:
@@ -96,17 +98,22 @@ Ensure the geometry head is training correctly with the multi-task flow:
 python -m pytest tests/test_geometry_flow.py
 ```
 
-## Inference
+## Inference & Testing
 
+### Interactive Inference (Recommended)
+Use the notebook to visualize per-facet segmentation, normal maps, and slope analysis:
+**Location**: `notebooks/checkpoint_inference_test.ipynb`
+
+### Production Inference (CLI)
 Run the robust inference pipeline on high-resolution GeoTIFFs:
 
 ```bash
 python tools/inference.py \
     --config configs/deeproof_production_swin_L.py \
-    --checkpoint checkpoints/deeproof_deploy.pth \
+    --checkpoint work_dirs/swin_l_finetune_v2/iter_80000.pth \
     --input input_area.tif \
     --output result.json \
-    --min_confidence 0.6 \
+    --min_confidence 0.5 \
     --save_viz
 ```
 
@@ -134,8 +141,3 @@ python tests/test_geometry_gradient.py
 
 ---
 © 2026 DeepRoof AI Team. Professional Grade AI for High-Fidelity 3D Reconstruction.
-# roof
-# roof
-# roof
-# roof
-# roof

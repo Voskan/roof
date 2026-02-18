@@ -44,7 +44,7 @@ model = dict(
     
     # Multi-Task Loss Weights (A100 Optimized)
     # High priority on Geometry and Segmentation
-    geometry_loss_weight=5.0,
+    geometry_loss_weight=10.0,  # Doubled: force better normal prediction
     
     decode_head=dict(
         type='DeepRoofMask2FormerHead',
@@ -117,7 +117,9 @@ model = dict(
             use_sigmoid=False,
             loss_weight=2.0,
             reduction='mean',
-            class_weight=[1.0] * num_classes + [0.1]),
+            # bg=1, flat=1, sloped=10, no_obj=0.1
+            # Dataset is 95% flat — 10x weight on sloped forces class discrimination
+            class_weight=[1.0, 1.0, 10.0, 0.1]),
         loss_mask=dict(
             type='mmdet.CrossEntropyLoss',
             use_sigmoid=True,

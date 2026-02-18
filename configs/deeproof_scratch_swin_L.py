@@ -12,7 +12,7 @@ input_res = (512, 512)     # Native OmniCity image size
 
 # 2. Resume from iter_40000 checkpoint (load weights only, reset optimizer)
 # -------------------------
-load_from = 'work_dirs/swin_l_scratch_v1/iter_40000.pth'
+load_from = '/workspace/roof/work_dirs/swin_l_scratch_v1/iter_40000.pth'
 resume = False  # Load weights only, fresh optimizer for new loss weights
 
 # 3. Optimized Optimizer & Scale

@@ -32,7 +32,6 @@ data_preprocessor = dict(
 model = dict(
     type='DeepRoofMask2Former', # Our Multi-Task Model
     data_preprocessor=data_preprocessor,
-    neck=None,
     test_cfg=dict(mode='whole'),
     
     # Custom Geometry Head
@@ -173,6 +172,14 @@ train_dataloader = dict(
 )
 
 val_pipeline = []
+
+# Test/inference pipeline: standard mmseg pipeline for external images.
+# Resize to training resolution to keep the feature distribution consistent.
+test_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='Resize', scale=(1024, 1024), keep_ratio=False),
+    dict(type='PackSegInputs'),
+]
 
 val_dataloader = dict(
     batch_size=1,

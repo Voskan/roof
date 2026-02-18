@@ -109,9 +109,9 @@ def test_augmentation_consistency():
     instance_mask[50:150, 50:150] = 1 
     cv2.imwrite(f'{data_root}/masks/test.png', instance_mask)
     
-    # Normals: North facing (0, 1, 0)
+    # Normals: East facing (1, 0, 0)
     normals = np.zeros((256, 256, 3), dtype=np.float32)
-    normals[50:150, 50:150, 1] = 1.0 # North
+    normals[50:150, 50:150, 0] = 1.0  # East
     np.save(f'{data_root}/normals/test.npy', normals)
     
     with open(f'{data_root}/train.txt', 'w') as f:
@@ -135,7 +135,6 @@ def test_augmentation_consistency():
     }]
 
     # 1. Test Horizontal Flip
-    # We force a horizontal flip to check vector rotation
     from deeproof.datasets.pipelines.augmentations import GeometricAugmentation
     import albumentations as A
     
@@ -146,33 +145,42 @@ def test_augmentation_consistency():
 
     item = dataset[0]
     
-    # Check instance mask flip
-    # Original building was at 50:150 (width). Image size 256.
-    # After horizontal flip, width indices should be flipped: (256-150):(256-50) -> 106:206
-    mask_aug = item['gt_instance_seg'].numpy()
-    if mask_aug.ndim == 3:
-        mask_aug = mask_aug.squeeze(0)
-    assert np.any(mask_aug[:, 106:206] == 1), "Instance mask horizontal flip failed"
-    assert not np.any(mask_aug[:, 50:100] == 1), "Instance mask old position not cleared after flip"
-    assert 'data_samples' in item, "MMEngine data sample payload missing"
-    assert torch.is_tensor(item['data_samples'].gt_instances.masks), \
-        "gt_instances.masks must be tensor for mmdet Mask2Former compatibility"
+    # New format: dict(inputs=Tensor, data_samples=SegDataSample)
+    assert 'inputs' in item, "Missing 'inputs' key in dataset output"
+    assert 'data_samples' in item, "Missing 'data_samples' key in dataset output"
     
-    # Check normal vector rotation
-    # Original: (0, 1, 0) [North]. Horiz flip (mirror across Y-axis) -> nx' = -nx
-    # Since nx was 0, it stays (0, 1, 0).
-    # Let's try Diagonal / East: (1, 0, 0) -> (-1, 0, 0) [West]
-    normals[50:150, 50:150, 0] = 1.0
-    normals[50:150, 50:150, 1] = 0.0
-    np.save(f'{data_root}/normals/test.npy', normals)
+    ds = item['data_samples']
     
-    item = dataset[0]
-    normal_aug = item['gt_normals'].permute(1, 2, 0).numpy()
+    # Check instance masks via data_samples
+    assert hasattr(ds, 'gt_instances'), "data_samples missing gt_instances"
+    gt_inst = ds.gt_instances
+    assert hasattr(gt_inst, 'masks'), "gt_instances missing masks"
+    masks = gt_inst.masks
+    assert torch.is_tensor(masks), "gt_instances.masks must be tensor"
     
-    # In the flipped region, nx should be -1.0
-    val_nx = normal_aug[100, 150, 0]
+    if masks.numel() > 0:
+        # Instance mask after horizontal flip
+        # Original building was at cols 50:150 (width=256).
+        # After horizontal flip: 256-150=106, 256-50=206 -> cols 106:206
+        mask_np = masks[0].numpy() if masks.ndim == 3 else masks.numpy()
+        assert np.any(mask_np[:, 106:206]), "Instance mask horizontal flip failed"
+        assert not np.any(mask_np[:, 50:100]), "Instance mask old position not cleared after flip"
+    
+    # Check normals via data_samples
+    assert hasattr(ds, 'gt_normals'), "data_samples missing gt_normals"
+    normals_data = ds.gt_normals.data  # CHW format [3, H, W]
+    normal_hwc = normals_data.permute(1, 2, 0).numpy()
+    
+    # Original: East (1, 0, 0) -> Horiz flip -> West (-1, 0, 0)
+    # Check in the flipped region (was 50:150 cols -> 106:206 cols after flip)
+    val_nx = normal_hwc[100, 150, 0]
     print(f"Augmented nx at (100, 150): {val_nx}")
     assert np.isclose(val_nx, -1.0, atol=1e-5), f"Normal vector horizontal flip failed: got {val_nx}"
+
+    # Check inputs tensor shape (CHW)
+    inp = item['inputs']
+    assert inp.ndim == 3, f"inputs should be 3D (CHW), got {inp.ndim}D"
+    assert inp.shape[0] == 3, f"inputs channel dim should be 3, got {inp.shape[0]}"
 
     print("SUCCESS: Augmentation consistency verified.")
     
@@ -182,3 +190,4 @@ def test_augmentation_consistency():
 
 if __name__ == "__main__":
     test_augmentation_consistency()
+

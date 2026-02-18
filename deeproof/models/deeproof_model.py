@@ -459,13 +459,25 @@ class DeepRoofMask2Former(Mask2FormerBase):
     def predict(self, inputs: torch.Tensor, data_samples: List[SegDataSample]) -> List[SegDataSample]:
         """
         Implementation of inference with geometry predictions.
+        
+        The base Mask2Former.predict() runs backbone + decode_head and produces
+        semantic / instance predictions. We then attach geometry (surface normal)
+        predictions to each detected instance by running the GeometryHead on
+        the cached query embeddings from the decode head.
         """
         # Keep inference path robust if external code mutates/clears test_cfg.
         self.test_cfg = self._normalize_test_cfg(getattr(self, 'test_cfg', None))
+
+        # Reset cache before prediction.
+        if hasattr(self.decode_head, 'last_query_embeddings'):
+            self.decode_head.last_query_embeddings = None
+        if hasattr(self.decode_head, 'last_cls_scores'):
+            self.decode_head.last_cls_scores = None
+
         results = super().predict(inputs, data_samples)
 
-        # Some mmseg variants return semantic maps only. Build instance outputs
-        # from connected components so inference/post-processing can proceed.
+        # Build instance predictions from semantic map when model returns
+        # semantic-only output (common with some mmseg forks).
         for sample in results:
             pred_instances = getattr(sample, 'pred_instances', None)
             has_instances = pred_instances is not None and len(pred_instances) > 0
@@ -476,47 +488,8 @@ class DeepRoofMask2Former(Mask2FormerBase):
             if torch.is_tensor(sem_data):
                 sample.pred_instances = self._instances_from_semantic(sem_data)
         
-        # Run Geometry Head on inference embeddings
-        x = self.extract_feat(inputs)
-        # Cache decode-head query embeddings using API-compatible calls across
-        # mmseg/mmdet variants. Geometry attachment is best-effort at inference.
-        if hasattr(self.decode_head, 'last_query_embeddings'):
-            self.decode_head.last_query_embeddings = None
-        if hasattr(self.decode_head, 'last_cls_scores'):
-            self.decode_head.last_cls_scores = None
-
-        decode_ok = False
-
-        # Preferred path: our custom decode head caches embeddings in forward().
-        try:
-            self.decode_head(x, data_samples)
-            decode_ok = True
-        except Exception:
-            decode_ok = False
-
-        # Fallback for forks where only predict() exists/works.
-        if not decode_ok and hasattr(self.decode_head, 'predict'):
-            predict_fn = self.decode_head.predict
-            batch_img_metas = [
-                sample.metainfo for sample in data_samples
-            ] if data_samples is not None else []
-            test_cfg = getattr(self, 'test_cfg', None)
-            call_attempts = [
-                lambda: predict_fn(x, data_samples, test_cfg),
-                lambda: predict_fn(x, batch_img_metas, test_cfg),
-                lambda: predict_fn(x, data_samples),
-                lambda: predict_fn(x, batch_img_metas),
-            ]
-            for call in call_attempts:
-                try:
-                    call()
-                    decode_ok = True
-                    break
-                except TypeError:
-                    continue
-                except Exception:
-                    break
-
+        # Attach geometry predictions if query embeddings were cached during
+        # the forward pass inside super().predict().
         query_cache = getattr(self.decode_head, 'last_query_embeddings', None)
         if query_cache is not None:
             query_embeddings = self._normalize_query_embeddings(
@@ -529,16 +502,10 @@ class DeepRoofMask2Former(Mask2FormerBase):
             geo_preds = self.geometry_head(query_embeddings)
             
             for i in range(len(results)):
-                # Attach normal vectors to each detected instance
-                # Mask2FormerHead.predict normally populates results[i].pred_instances
                 if not hasattr(results[i], 'pred_instances'):
                     continue
                 insts = results[i].pred_instances
                 if len(insts) > 0:
-                    # During inference, we don't match; we just attach the predicted
-                    # normal for the query that generated each instance.
-                    # Note: Need to verify if 'query_indices' are stored by the head.
-                    # As a simplified production fallback:
                     pred_normals = geo_preds[i]
                     if pred_normals.shape[0] < len(insts):
                         if pred_normals.shape[0] == 0:
@@ -554,3 +521,4 @@ class DeepRoofMask2Former(Mask2FormerBase):
                     insts.normals = pred_normals[:len(insts)]
                     
         return results
+

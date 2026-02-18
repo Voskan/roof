@@ -80,176 +80,141 @@ class DeepRoofDataset(BaseSegDataset):
     def __getitem__(self, idx: int) -> Dict:
         data_info = self.get_data_info(idx)
         
-        # 1. Load Image
+        # 1. Load Image (BGR uint8 — SegDataPreProcessor handles bgr_to_rgb + normalization)
         img = cv2.imread(data_info['img_path'])
-        # Keep BGR here and let SegDataPreProcessor handle bgr_to_rgb conversion.
-        # This keeps train/inference color pipeline consistent with mmseg defaults.
+        if img is None:
+            raise FileNotFoundError(f"Image not found: {data_info['img_path']}")
         
         # 2. Load Instance Mask (uint16)
         instance_mask = cv2.imread(data_info['seg_map_path'], cv2.IMREAD_UNCHANGED)
+        if instance_mask is None:
+            raise FileNotFoundError(f"Mask not found: {data_info['seg_map_path']}")
         
         # 3. Load Normal Map
-        # Normals saved as .npy (float, -1 to 1) or .png (uint8, 0 to 255)
-        # Based on process scripts, we saved .npy for precise training
         try:
             normals = np.load(data_info['normal_path'])
-        except:
-            # Fallback if png for Building3D
+        except Exception:
             normals_vis = cv2.imread(data_info['normal_path'].replace('.npy', '.png'))
             if normals_vis is None:
-                 # Create dummy normals if missing
-                 normals = np.zeros_like(img, dtype=np.float32)
-                 normals[:,:,2] = 1.0 # UP
+                normals = np.zeros_like(img, dtype=np.float32)
+                normals[:,:,2] = 1.0  # UP
             else:
                 normals = (normals_vis.astype(np.float32) / 255.0) * 2.0 - 1.0
-                normals = normals[:, :, ::-1] # BGR to RGB (XYZ)
+                normals = normals[:, :, ::-1]  # BGR to RGB (XYZ)
 
         # 4. Generate Semantic Labels on-the-fly
         # Flat if slope < 5 degrees. Slope = arccos(nz)
-        # nz is normals[:, :, 2]
-        # Avoid numerical errors
         nz = np.clip(normals[:, :, 2], -1.0, 1.0)
         slope_rad = np.arccos(nz)
         slope_deg = np.degrees(slope_rad)
         
-        # Semantic Label: 0=Background, 1=Flat, 2=Sloped
         semantic_mask = np.zeros_like(instance_mask, dtype=np.uint8)
-        
-        # Filter background (instance_mask == 0) -> 0
         is_roof = instance_mask > 0
-        
-        is_flat = (slope_deg < 5.0) & is_roof
-        is_sloped = (slope_deg >= 5.0) & is_roof
-        
-        semantic_mask[is_flat] = 1
-        semantic_mask[is_sloped] = 2
+        semantic_mask[(slope_deg < 5.0) & is_roof] = 1   # Flat
+        semantic_mask[(slope_deg >= 5.0) & is_roof] = 2   # Sloped
         
         # 5. Apply Augmentations
         if not self.test_mode:
-            # We pass image, mask (semantic), and normals to the augmentor.
-            # GoogleMapsAugmentation is a GeometricAugmentation wrapper that
-            # handles the replay logic for vector rotations of 'normals'.
-            # Instance mask is also passed as an additional target.
-            
             augmented = self.augmentor(
                 image=img, 
                 mask=semantic_mask,
                 normals=normals,
                 instance_mask=instance_mask
             )
-            instance_mask_aug = augmented['instance_mask']
-            
-            img_aug = augmented['image']
-            sem_aug = augmented['mask']
-            normals_aug = augmented['normals']
+            img = augmented['image']
+            semantic_mask = augmented['mask']
+            normals = augmented['normals']
+            instance_mask = augmented['instance_mask']
 
-            if isinstance(img_aug, torch.Tensor):
-                img_tensor = img_aug.float()
-            else:
-                img_tensor = torch.from_numpy(img_aug).permute(2, 0, 1).float()
-
-            if isinstance(sem_aug, torch.Tensor):
-                sem_tensor = sem_aug.long()
-            else:
-                sem_tensor = torch.from_numpy(sem_aug).long()
-
-            if isinstance(normals_aug, torch.Tensor):
-                # Accept both HWC and CHW tensor layouts.
-                if normals_aug.ndim == 3 and normals_aug.shape[0] == 3:
-                    normal_tensor = normals_aug.float()
-                else:
-                    normal_tensor = normals_aug.permute(2, 0, 1).float()
-            else:
-                normal_tensor = torch.from_numpy(normals_aug).permute(2, 0, 1).float()
-
-            if isinstance(instance_mask_aug, torch.Tensor):
-                instance_tensor = instance_mask_aug.long()
-            else:
-                instance_tensor = torch.from_numpy(instance_mask_aug).long()
-            
+        # 6. Convert to tensors
+        # Image: HWC uint8 BGR -> CHW float [0, 255]
+        # SegDataPreProcessor will apply mean/std normalization and bgr_to_rgb.
+        if isinstance(img, torch.Tensor):
+            img_tensor = img.float()
+            if img_tensor.ndim == 3 and img_tensor.shape[-1] == 3:
+                img_tensor = img_tensor.permute(2, 0, 1)
         else:
-            # Test mode: keep raw scale and let SegDataPreProcessor apply
-            # normalization once for consistent train/infer behavior.
-            img_tensor = torch.from_numpy(img).permute(2, 0, 1).float()
-            sem_tensor = torch.from_numpy(semantic_mask).long()
-            instance_tensor = torch.from_numpy(instance_mask).long()
-            normal_tensor = torch.from_numpy(normals).permute(2, 0, 1).float()
+            img_tensor = torch.from_numpy(img.copy()).permute(2, 0, 1).float()
 
-        out = dict(
-            img=img_tensor,
-            gt_semantic_seg=sem_tensor,
-            gt_instance_seg=instance_tensor,
-            gt_normals=normal_tensor,
-            img_metas=data_info
+        if isinstance(semantic_mask, torch.Tensor):
+            sem_tensor = semantic_mask.long()
+        else:
+            sem_tensor = torch.from_numpy(semantic_mask.copy()).long()
+
+        if isinstance(normals, torch.Tensor):
+            if normals.ndim == 3 and normals.shape[0] == 3:
+                normal_tensor = normals.float()
+            else:
+                normal_tensor = normals.permute(2, 0, 1).float()
+        else:
+            normal_tensor = torch.from_numpy(normals.copy()).permute(2, 0, 1).float()
+
+        if isinstance(instance_mask, torch.Tensor):
+            instance_tensor = instance_mask.long()
+        else:
+            instance_tensor = torch.from_numpy(instance_mask.copy()).long()
+
+        # 7. Build MMEngine SegDataSample — the ONLY format MMEngine Runner expects
+        from mmseg.structures import SegDataSample
+        from mmengine.structures import PixelData, InstanceData
+
+        H, W = int(img_tensor.shape[-2]), int(img_tensor.shape[-1])
+        sem_map = sem_tensor.squeeze(0) if sem_tensor.ndim == 3 else sem_tensor
+        inst_map = instance_tensor.squeeze(0) if instance_tensor.ndim == 3 else instance_tensor
+
+        data_sample = SegDataSample()
+        data_sample.set_metainfo(
+            dict(
+                img_shape=(H, W),
+                ori_shape=(H, W),
+                pad_shape=(H, W),
+                img_id=data_info.get('img_id', ''),
+                img_path=data_info.get('img_path', ''),
+                seg_map_path=data_info.get('seg_map_path', ''),
+            ))
+
+        data_sample.gt_sem_seg = PixelData(data=sem_map.unsqueeze(0).long())
+        data_sample.gt_normals = PixelData(data=normal_tensor.float())
+
+        gt_instances = InstanceData()
+        inst_ids = torch.unique(inst_map)
+        inst_ids = inst_ids[inst_ids > 0]
+
+        if inst_ids.numel() > 0:
+            masks = torch.stack([(inst_map == i) for i in inst_ids], dim=0).bool()
+            labels = []
+            normals_per_inst = []
+            for m in masks:
+                sem_vals = sem_map[m]
+                if sem_vals.numel() == 0:
+                    label = 1
+                else:
+                    cls_ids, counts = torch.unique(sem_vals, return_counts=True)
+                    fg = cls_ids > 0
+                    if fg.any():
+                        cls_ids = cls_ids[fg]
+                        counts = counts[fg]
+                    label = int(cls_ids[counts.argmax()].item()) if cls_ids.numel() > 0 else 1
+                labels.append(label)
+
+                avg_n = normal_tensor[:, m].mean(dim=1)
+                avg_n = F.normalize(avg_n, p=2, dim=0)
+                normals_per_inst.append(avg_n)
+
+            labels = torch.tensor(labels, dtype=torch.long)
+            normals_inst = torch.stack(normals_per_inst, dim=0).float()
+        else:
+            masks = torch.zeros((0, H, W), dtype=torch.bool)
+            labels = torch.zeros((0,), dtype=torch.long)
+            normals_inst = torch.zeros((0, 3), dtype=torch.float32)
+
+        gt_instances.masks = masks
+        gt_instances.labels = labels
+        gt_instances.normals = normals_inst
+        data_sample.gt_instances = gt_instances
+
+        return dict(
+            inputs=img_tensor,
+            data_samples=data_sample,
         )
 
-        # Build MMEngine-style sample package expected by SegDataPreProcessor
-        # Keep legacy keys above for backward compatibility with existing tests/utilities.
-        try:
-            from mmseg.structures import SegDataSample
-            from mmengine.structures import PixelData, InstanceData
-
-            H, W = int(img_tensor.shape[-2]), int(img_tensor.shape[-1])
-            sem_map = sem_tensor.squeeze(0) if sem_tensor.ndim == 3 else sem_tensor
-            inst_map = instance_tensor.squeeze(0) if instance_tensor.ndim == 3 else instance_tensor
-
-            data_sample = SegDataSample()
-            data_sample.set_metainfo(
-                dict(
-                    img_shape=(H, W),
-                    ori_shape=(H, W),
-                    pad_shape=(H, W),
-                    img_id=data_info.get('img_id', '')
-                ))
-
-            data_sample.gt_sem_seg = PixelData(data=sem_map.unsqueeze(0).long())
-            data_sample.gt_normals = PixelData(data=normal_tensor.float())
-
-            gt_instances = InstanceData()
-            inst_ids = torch.unique(inst_map)
-            inst_ids = inst_ids[inst_ids > 0]
-
-            if inst_ids.numel() > 0:
-                masks = torch.stack([(inst_map == i) for i in inst_ids], dim=0).bool()
-                labels = []
-                normals_per_inst = []
-                for m in masks:
-                    sem_vals = sem_map[m]
-                    if sem_vals.numel() == 0:
-                        label = 1
-                    else:
-                        cls_ids, counts = torch.unique(sem_vals, return_counts=True)
-                        fg = cls_ids > 0
-                        if fg.any():
-                            cls_ids = cls_ids[fg]
-                            counts = counts[fg]
-                        label = int(cls_ids[counts.argmax()].item()) if cls_ids.numel() > 0 else 1
-                    labels.append(label)
-
-                    avg_n = normal_tensor[:, m].mean(dim=1)
-                    avg_n = F.normalize(avg_n, p=2, dim=0)
-                    normals_per_inst.append(avg_n)
-
-                labels = torch.tensor(labels, dtype=torch.long)
-                normals_inst = torch.stack(normals_per_inst, dim=0).float()
-            else:
-                masks = torch.zeros((0, H, W), dtype=torch.bool)
-                labels = torch.zeros((0,), dtype=torch.long)
-                normals_inst = torch.zeros((0, 3), dtype=torch.float32)
-
-            # mmdet Mask2Former head expects tensor-like gt masks and directly
-            # applies tensor ops (e.g. unsqueeze). Using BitmapMasks here breaks
-            # that path on recent mmdet versions.
-            gt_instances.masks = masks
-
-            gt_instances.labels = labels
-            gt_instances.normals = normals_inst
-            data_sample.gt_instances = gt_instances
-
-            out['inputs'] = img_tensor
-            out['data_samples'] = data_sample
-        except Exception:
-            # Fallback for lightweight test environments with mocked mmseg/mmengine.
-            pass
-
-        return out

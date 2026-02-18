@@ -35,9 +35,8 @@ model = dict(
         # SwinV2 Specifics for High Res
         pretrained_window_sizes=[12, 12, 12, 6] # Mismatch with window_size=24 is handled by interpolation in V2
     ),
-    neck=dict(
-        type='FPN',
-        in_channels=[192, 384, 768, 1536], # Swin-Large channels
-        out_channels=256,
-        num_outs=4),
+    # NOTE: No FPN neck here. Mask2Former uses its own MSDeformAttnPixelDecoder
+    # inside the decode_head as the feature fusion stage. Adding an FPN would
+    # reshape channels from [192,384,768,1536] to [256,256,256,256], breaking
+    # the pixel decoder's expected input dimensions.
 )

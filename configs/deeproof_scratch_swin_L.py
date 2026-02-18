@@ -7,7 +7,7 @@ _base_ = [
 # ----------------------------------------
 max_iters = 80000        # Shorter: fine-tuning from iter_40000 weights
 val_interval = 5000      # Evaluate every 5k steps
-batch_size = 8           # Doubled from 4—8 to use more VRAM (~60-70%)
+batch_size = 16          # A100 80GB uses only 35% at bs=8, doubling to ~70%
 input_res = (512, 512)     # Native OmniCity image size
 
 # 2. Resume from iter_40000 checkpoint (load weights only, reset optimizer)

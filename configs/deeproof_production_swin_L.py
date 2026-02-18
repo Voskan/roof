@@ -174,10 +174,11 @@ train_dataloader = dict(
 val_pipeline = []
 
 # Test/inference pipeline: standard mmseg pipeline for external images.
-# Resize to training resolution to keep the feature distribution consistent.
+# Resize to training resolution (512×512 = native OmniCity size) to keep
+# the feature distribution consistent with what the model learned.
 test_pipeline = [
     dict(type='LoadImageFromFile'),
-    dict(type='Resize', scale=(1024, 1024), keep_ratio=False),
+    dict(type='Resize', scale=(512, 512), keep_ratio=False),
     dict(type='PackSegInputs'),
 ]
 

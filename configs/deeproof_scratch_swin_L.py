@@ -8,7 +8,7 @@ _base_ = [
 max_iters = 160000       # Extended training for full convergence from scratch
 val_interval = 8000      # Evaluate every 8k steps
 batch_size = 4           # Samples per GPU (total 16 on 4x A100)
-input_res = (1024, 1024)
+input_res = (512, 512)     # Native OmniCity image size (no resize in pipeline)
 
 # 2. Force Scratch Training
 # -------------------------

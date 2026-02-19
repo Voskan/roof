@@ -121,30 +121,33 @@ class CosineSimilarityLoss(nn.Module):
     def forward(self, pred, target, **kwargs):
         """
         Args:
-            pred (Tensor): Predicted normal vectors (N, 3) or (N, 3, H, W).
-            target (Tensor): Ground truth normal vectors (same shape).
+            pred (Tensor): Predicted normal vectors (N, 3).
+            target (Tensor): Ground truth normal vectors (N, 3).
+                             Background/invalid pixels have GT normal = [0, 0, 0].
         """
-        # Ensure inputs are normalized
-        pred_norm = F.normalize(pred, p=2, dim=1, eps=self.eps)
-        target_norm = F.normalize(target, p=2, dim=1, eps=self.eps)
-        
-        # Calculate Cosine Similarity (Dot Product along channel dim)
-        # sum(a * b) along dim 1
-        cosine_sim = (pred_norm * target_norm).sum(dim=1)
-        
-        # Calculate Loss: 1 - cosine_sim
-        loss = 1.0 - cosine_sim
-        
-        # Masking invalid regions (optional, if target has 0 vectors for background)
-        # Background regions often have [0,0,0] normals in GT.
-        # We should generate a mask where target is not zero vector.
-        # valid_mask = (target.abs().sum(dim=1) > 0).float()
-        # loss = loss * valid_mask
-        # For simplicity assuming masked inputs or handled externally
-        
+        # Ensure inputs are L2-normalized (axis = last dim = 1 for (N,3))
+        pred_norm = F.normalize(pred, p=2, dim=-1, eps=self.eps)
+        target_norm = F.normalize(target, p=2, dim=-1, eps=self.eps)
+
+        # Cosine similarity = dot product of unit vectors
+        cosine_sim = (pred_norm * target_norm).sum(dim=-1)  # (N,)
+
+        # Loss: 1 - cosine_sim  (range [0, 2]; 0=perfect, 2=opposite)
+        loss = 1.0 - cosine_sim  # (N,)
+
+        # FIX: Exclude zero-vector GT normals (background / unassigned instances).
+        # Without this mask, instances with GT=[0,0,0] contribute loss≈1.0
+        # which is meaningless noise — the model "learns" to predict flatness
+        # even for unmatched queries just to minimize this spurious signal.
+        valid_mask = (target.abs().sum(dim=-1) > self.eps).float()  # (N,)
+        loss = loss * valid_mask
+
+        n_valid = valid_mask.sum().clamp(min=1.0)
+
         if self.reduction == 'mean':
-            loss = loss.mean()
+            loss = loss.sum() / n_valid
         elif self.reduction == 'sum':
             loss = loss.sum()
-            
+        # else 'none': return per-element
+
         return loss * self.loss_weight

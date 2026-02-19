@@ -145,11 +145,10 @@ model = dict(
             assigner=dict(
                 type='mmdet.HungarianAssigner',
                 match_costs=[
-                    # FIX Bug #6: Add class_weight to cost to match the loss weights.
-                    # Without this, the matcher assigns queries to sloped instances with
-                    # the same cost as flat, so very few queries supervise sloped class.
-                    dict(type='mmdet.ClassificationCost', weight=2.0,
-                         class_weight=[1.0, 1.0, 3.0, 0.1]),
+                    # ClassificationCost weight=2.0 gives cls matching higher priority
+                    # vs mask/dice costs. Per-class imbalance is handled by loss_cls.class_weight.
+                    # Note: mmdet.ClassificationCost does not accept a 'class_weight' kwarg.
+                    dict(type='mmdet.ClassificationCost', weight=2.0),
                     dict(
                         type='mmdet.CrossEntropyLossCost',
                         weight=5.0,

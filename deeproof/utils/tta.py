@@ -46,74 +46,82 @@ def _instances_from_semantic(sem_map: torch.Tensor, min_area: int = 64) -> Insta
     return out
 
 
-def apply_tta(model, 
-              image: np.ndarray, 
+def _rotate_normal_vector(nx, ny, nz, degrees_ccw: float):
+    """
+    Rotate normal vector (nx, ny) in the image plane by degrees_ccw counter-clockwise.
+    nz is invariant (nadir view, rotation is in XY plane).
+
+    This applies the standard 2D rotation matrix:
+        nx' =  nx * cos(theta) - ny * sin(theta)
+        ny' =  nx * sin(theta) + ny * cos(theta)
+    """
+    theta = np.deg2rad(degrees_ccw)
+    cos_t = float(np.cos(theta))
+    sin_t = float(np.sin(theta))
+    nx_new = nx * cos_t - ny * sin_t
+    ny_new = nx * sin_t + ny * cos_t
+    return nx_new, ny_new, nz
+
+
+def apply_tta(model,
+              image: np.ndarray,
               device='cuda') -> dict:
     """
     Apply Test Time Augmentation (TTA) on a single tile.
-    
-    Augmentations:
+
+    Augmentations applied to image:
     1. Identity (0 deg)
-    2. Rotate 90 deg (CCW)
-    3. Rotate 180 deg
-    4. Rotate 270 deg
-    5. Horizontal Flip
-    
-    Args:
-        model: Loaded DeepRoofMask2Former model.
-        image (np.ndarray): Input tile (H, W, 3).
-        device (str): Device to run inference on.
-        
-    Returns:
-        dict: Merged instance predictions.
+    2. Rotate 90 deg CCW (k=1)
+    3. Rotate 180 deg (k=2)
+    4. Rotate 270 deg CCW / 90 CW (k=3)
+    5. Horizontal Flip (flip x-axis)
+
+    For each augmented prediction, we apply the INVERSE geometric transform to
+    bring masks and normal vectors back to the original image coordinate system
+    before aggregating with NMS.
+
+    Normal vector inverse transforms (2D rotation, nz invariant):
+        rot90  (applied +90):  inverse is -90  => (nx,ny) -> ( ny/1, -nx)  [rot(-90)]
+                               Wait: torch.rot90 k=1 rotates 90 CCW, which means
+                               a point (x,y) goes to (y, W-1-x) in image coords.
+                               For vectors (centered at origin): (vx,vy) -> (-vy, vx).
+                               Inverse of that is (vx,vy) -> (vy, -vx).
+        rot180 (applied +180): inverse is -180 => (nx,ny) -> (-nx, -ny)
+        rot270 (applied -90):  inverse is +90  => (nx,ny) -> (-ny, nx)
+        hflip  (flip x):       inverse is hflip => (nx,ny) -> (-nx, ny)
     """
     model.eval()
     H, W, C = image.shape
-    
-    # 1. Prepare Augmentations
-    # Store tuples of (image_tensor, transform_type)
-    # transform_type: 'id', 'rot90', 'rot180', 'rot270', 'hflip'
-    
-    img_tensor = torch.from_numpy(image).permute(2, 0, 1).float() # (3, H, W)
-    
-    # Create batch of 5 images
-    batch_imgs = []
+
+    img_tensor = torch.from_numpy(image).permute(2, 0, 1).float()  # (3, H, W)
+
+    # 1. Prepare batch
     transforms = ['id', 'rot90', 'rot180', 'rot270', 'hflip']
-    
-    # Identity
-    batch_imgs.append(img_tensor)
-    
-    # Rot 90 (k=1)
-    batch_imgs.append(torch.rot90(img_tensor, k=1, dims=[1, 2]))
-    
-    # Rot 180 (k=2)
-    batch_imgs.append(torch.rot90(img_tensor, k=2, dims=[1, 2]))
-    
-    # Rot 270 (k=3)
-    batch_imgs.append(torch.rot90(img_tensor, k=3, dims=[1, 2]))
-    
-    # HFlip
-    batch_imgs.append(torch.flip(img_tensor, dims=[2])) # dim 2 is Width
-    
-    # Stack
+    batch_imgs = [
+        img_tensor,                                      # id
+        torch.rot90(img_tensor, k=1, dims=[1, 2]),       # rot90 CCW
+        torch.rot90(img_tensor, k=2, dims=[1, 2]),       # rot180
+        torch.rot90(img_tensor, k=3, dims=[1, 2]),       # rot270 CCW
+        torch.flip(img_tensor, dims=[2]),                # hflip
+    ]
     batch_stack = torch.stack(batch_imgs)
-    
+
     # 2. Run Inference
-    # Create dummy samples
-    batch_samples = [SegDataSample(metainfo=dict(img_shape=(H, W), ori_shape=(H, W))) for _ in range(5)]
-    
-    print(f"Running TTA Inference on batch of {len(batch_stack)}...")
+    batch_samples = [
+        SegDataSample(metainfo=dict(img_shape=(H, W), ori_shape=(H, W)))
+        for _ in range(len(transforms))
+    ]
+
+    print(f"Running TTA on batch of {len(batch_stack)}...")
     with torch.no_grad():
-        # Use standard test_step so model data_preprocessor runs exactly as in
-        # normal mmseg inference (normalization, padding, device transfer).
         batch_data = dict(
             inputs=[img for img in batch_stack],
             data_samples=batch_samples,
         )
         results = model.test_step(batch_data)
-        
+
     all_pred_instances = []
-    
+
     # 3. Inverse Transformations & Collect
     for i, res in enumerate(results):
         transform = transforms[i]
@@ -125,122 +133,109 @@ def apply_tta(model,
                 preds = _instances_from_semantic(sem_data)
             else:
                 continue
-        
+
         if len(preds) == 0:
             continue
-            
-        masks = preds.masks # (N, H, W)
+
+        masks = preds.masks   # (N, H, W)
         scores = preds.scores
         labels = preds.labels
-        has_normals = hasattr(preds, 'normals') # (N, 3)
-        
-        # Inverse Transform Masks
+        has_normals = hasattr(preds, 'normals')
+
+        # Inverse-transform masks back to original coordinate frame
         if transform == 'id':
             inv_masks = masks
         elif transform == 'rot90':
-            # Inverse of Rot90 is Rot270 (k=3)
+            # Applied rot90 CCW → inverse is rot90 CW (k=3)
             inv_masks = torch.rot90(masks, k=3, dims=[1, 2])
         elif transform == 'rot180':
-            # Inverse of Rot180 is Rot180 (k=2)
+            # Inverse of rot180 is rot180
             inv_masks = torch.rot90(masks, k=2, dims=[1, 2])
         elif transform == 'rot270':
-            # Inverse of Rot270 is Rot90 (k=1)
+            # Applied rot90 CW → inverse is rot90 CCW (k=1)
             inv_masks = torch.rot90(masks, k=1, dims=[1, 2])
         elif transform == 'hflip':
             inv_masks = torch.flip(masks, dims=[2])
-            
+        else:
+            inv_masks = masks
+
         for k in range(len(scores)):
             mask = inv_masks[k].cpu().numpy()
             score = scores[k].cpu().item()
             label = labels[k].cpu().item()
-            
-            # Recalculate BBox from inverted mask
+
             rows = np.any(mask, axis=1)
             cols = np.any(mask, axis=0)
-            if not np.any(rows) or not np.any(cols): continue
-            
+            if not np.any(rows) or not np.any(cols):
+                continue
+
             ymin, ymax = np.where(rows)[0][[0, -1]]
             xmin, xmax = np.where(cols)[0][[0, -1]]
             bbox = [xmin, ymin, xmax + 1, ymax + 1]
-            
+
             inst = {
                 'bbox': bbox,
-                'mask': mask, # Full mask (or RLE)
+                'mask': mask,
                 'score': score,
-                'label': label
+                'label': label,
             }
-            
-            # Inverse Transform Normals
-            # Normal vector n = (nx, ny, nz)
-            # Coordinates: x (width), y (height), z (up)
+
+            # Inverse-transform normals
             if has_normals:
-                n = preds.normals[k].cpu().clone() # (3,)
-                nx, ny, nz = n[0], n[1], n[2]
-                
-                # Careful with coordinate systems. 
-                # Torch rot90 on (H, W):
-                # k=1 (90 deg CCW): (x, y) -> (y, -x) ? No.
-                # Image coords: (0,0) top-left. y down, x right.
-                # Rot90 CCW: x' = y, y' = W-1-x.
-                # Vector rotation is simpler, centered at origin.
-                # Vector (nx, ny) rotation +90 deg:
-                # x' = -y
-                # y' = x
-                # But we need INVERSE transform of the vector.
-                # If we rotated image +90, the vector detected is in rotated frame.
-                # We need to rotate it back -90 (or +270).
-                # Inverse Matrix for +90 (CCW) is -90 (CW).
-                # Rot -90: x' = y, y' = -x.
-                
+                # FIX: Original code had uninitialized inst_n for 'id' transform
+                # causing NameError or wrong variable usage on the line below.
+                n = preds.normals[k].cpu().clone()  # (3,)
+                nx, ny, nz = float(n[0]), float(n[1]), float(n[2])
+
                 if transform == 'id':
-                    pass
+                    # No transform — vector is already in original frame
+                    inv_nx, inv_ny, inv_nz = nx, ny, nz
                 elif transform == 'rot90':
-                    # Image was Rot90. Vector is in Rot90 frame.
-                    # Undo Rot90 -> Rot -90 (270).
-                    # (nx, ny) -> (ny, -nx)
-                    inst_n = torch.stack([ny, -nx, nz])
+                    # Image was rotated +90 CCW. In image coords with origin top-left,
+                    # rot90 CCW maps vector (vx,vy) -> (-vy, vx).
+                    # Inverse: rotate -90: (vx,vy) -> (vy, -vx).
+                    inv_nx, inv_ny, inv_nz = _rotate_normal_vector(nx, ny, nz, -90)
                 elif transform == 'rot180':
-                    # Undo Rot180 -> Rot 180.
-                    # (nx, ny) -> (-nx, -ny)
-                    inst_n = torch.stack([-nx, -ny, nz])
+                    # Inverse of rot180 is rot180: (vx,vy) -> (-vx, -vy)
+                    inv_nx, inv_ny, inv_nz = _rotate_normal_vector(nx, ny, nz, 180)
                 elif transform == 'rot270':
-                    # Image was Rot270 (-90). Vector is in that frame.
-                    # Undo Rot270 -> Rot +90.
-                    # (nx, ny) -> (-ny, nx)
-                    inst_n = torch.stack([-ny, nx, nz])
+                    # Image was rotated +270 CCW (= -90 CW). Vector: (vx,vy) -> (vy,-vx).
+                    # Inverse: rotate +90: (vx,vy) -> (-vy, vx).
+                    inv_nx, inv_ny, inv_nz = _rotate_normal_vector(nx, ny, nz, 90)
                 elif transform == 'hflip':
-                    # Horizontal flip (flip x).
-                    # Undo HFlip is same HFlip.
-                    # (nx, ny) -> (-nx, ny)
-                    inst_n = torch.stack([-nx, ny, nz])
-                    
-                inst['normal'] = inst_n.numpy()
-            
-            # Filter low confidence before NMS
-            if score > 0.1: # Lower threshold to allow aggregation
+                    # Horizontal flip negates x-component of normal
+                    # Inverse is same flip: nx -> -nx, ny unchanged
+                    inv_nx, inv_ny, inv_nz = -nx, ny, nz
+                else:
+                    inv_nx, inv_ny, inv_nz = nx, ny, nz
+
+                # Re-normalize after inverse transform (avoid floating point drift)
+                mag = (inv_nx**2 + inv_ny**2 + inv_nz**2) ** 0.5
+                if mag > 1e-6:
+                    inv_nx /= mag
+                    inv_ny /= mag
+                    inv_nz /= mag
+
+                inst['normal'] = np.array([inv_nx, inv_ny, inv_nz], dtype=np.float32)
+
+            if score > 0.1:
                 all_pred_instances.append(inst)
 
-    # 4. Aggregation (NMS)
+    # 4. Aggregation via NMS
     if len(all_pred_instances) == 0:
         return {'instances': []}
-        
+
     print(f"Aggregating {len(all_pred_instances)} instances from TTA...")
-    
-    boxes = torch.tensor([inst['bbox'] for inst in all_pred_instances], dtype=torch.float32)
-    scores = torch.tensor([inst['score'] for inst in all_pred_instances], dtype=torch.float32)
-    
-    # NMS
-    # TTA usually generates highly overlapping boxes for the same object.
-    # Standard NMS picks the highest score.
-    # 'Soft' aggregation or averaging scores of matched boxes is hard with just NMS.
-    # WBF (Weighted Box Fusion) is better but NMS is standard in simple TTA pipelines.
-    # We will just pick the best one.
-    
-    keep_indices = nms(boxes, scores, iou_threshold=0.6)
-    
+
+    boxes = torch.tensor(
+        [inst['bbox'] for inst in all_pred_instances], dtype=torch.float32)
+    agg_scores = torch.tensor(
+        [inst['score'] for inst in all_pred_instances], dtype=torch.float32)
+
+    keep_indices = nms(boxes, agg_scores, iou_threshold=0.6)
     final_instances = [all_pred_instances[i] for i in keep_indices]
-    
+
     return {
         'instances': final_instances,
-        'count': len(final_instances)
+        'count': len(final_instances),
     }

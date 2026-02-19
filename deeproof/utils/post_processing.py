@@ -98,20 +98,32 @@ def merge_tiles(instances: List[Dict],
             
             if 'mask_crop' in current:
                 y_off, x_off = current['offset']
-                # Current mask position in canvas
-                # Global pos: y_off, x_off. Canvas origin: min_y, min_x.
-                # Rel pos: y_off - min_y, x_off - min_x.
-                
                 cy = y_off - min_y
                 cx = x_off - min_x
                 cm_h, cm_w = current['mask_crop'].shape
-                
-                canvas_curr[cy:cy+cm_h, cx:cx+cm_w] = current['mask_crop']
-            elif 'mask' in current:
-                 # Assume mask is full size or we need to handle it.
-                 # If full size, simple slicing.
-                 # This implementation assumes sparse storage for efficiency.
-                 pass
+                # Clamp to canvas bounds (symmetric: same safety as 'other' path below)
+                y1_c = max(0, cy)
+                x1_c = max(0, cx)
+                y2_c = min(h, cy + cm_h)
+                x2_c = min(w, cx + cm_w)
+                cr_y1 = y1_c - cy
+                cr_x1 = x1_c - cx
+                cr_y2 = cr_y1 + (y2_c - y1_c)
+                cr_x2 = cr_x1 + (x2_c - x1_c)
+                canvas_curr[y1_c:y2_c, x1_c:x2_c] = current['mask_crop'][cr_y1:cr_y2, cr_x1:cr_x2]
+            elif 'mask' in current and current['mask'] is not None:
+                # Full-size mask: place at bbox offset relative to canvas origin
+                b1 = current['bbox']
+                c_y1 = int(b1[1]) - min_y
+                c_x1 = int(b1[0]) - min_x
+                # The mask may be full image size or cropped to bbox — handle both
+                m = current['mask']
+                mh, mw = m.shape[:2]
+                c_y2 = min(h, c_y1 + mh)
+                c_x2 = min(w, c_x1 + mw)
+                if c_y2 > c_y1 and c_x2 > c_x1:
+                    canvas_curr[max(0, c_y1):c_y2, max(0, c_x1):c_x2] = \
+                        m[:c_y2 - max(0, c_y1), :c_x2 - max(0, c_x1)]
             
             if 'mask_crop' in other:
                 y_off, x_off = other['offset']

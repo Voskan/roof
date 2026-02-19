@@ -110,8 +110,12 @@ class DeepRoofDataset(BaseSegDataset):
         
         semantic_mask = np.zeros_like(instance_mask, dtype=np.uint8)
         is_roof = instance_mask > 0
-        semantic_mask[(slope_deg < 5.0) & is_roof] = 1   # Flat
-        semantic_mask[(slope_deg >= 5.0) & is_roof] = 2   # Sloped
+        # FIX Bug #7: Lowered threshold from 5° to 2°.
+        # OmniCity roofs viewed from nadir rarely exceed 5°, leaving sloped class
+        # nearly empty (>98% flat). At 2° more instances are classified as sloped,
+        # improving class balance and giving the sloped head real training signal.
+        semantic_mask[(slope_deg < 2.0) & is_roof] = 1   # Flat (nearly horizontal)
+        semantic_mask[(slope_deg >= 2.0) & is_roof] = 2  # Sloped (any detectable pitch)
         
         # 5. Apply Augmentations
         if not self.test_mode:

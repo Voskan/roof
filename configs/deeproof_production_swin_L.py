@@ -1,5 +1,5 @@
 
-# DeepRoof-2016: Production Configuration for A100 Cluster (4 GPUs)
+# DeepRoof-2026: Production Configuration for A100 Cluster (4 GPUs)
 _base_ = [
     './swin/swin_large.py', # Inherit Backbone & Neck from Swin-L
 ]
@@ -33,7 +33,7 @@ model = dict(
     type='DeepRoofMask2Former', # Our Multi-Task Model
     data_preprocessor=data_preprocessor,
     test_cfg=dict(mode='whole'),
-    
+
     # Custom Geometry Head
     geometry_head=dict(
         type='GeometryHead',
@@ -41,11 +41,14 @@ model = dict(
         num_layers=3,
         hidden_dims=256
     ),
-    
-    # Multi-Task Loss Weights (A100 Optimized)
-    # High priority on Geometry and Segmentation
-    geometry_loss_weight=10.0,  # Doubled: force better normal prediction
-    
+
+    # FIX Bug #4: geometry_loss_weight 10.0 → 2.0
+    # At weight 10.0, geometry loss dominated total loss (~5.0 vs cls ~2.0),
+    # causing the model to collapse to flat_roof to minimize classification.
+    # At 2.0, all loss components (cls=2.0, mask=5.0, dice=5.0, geo=2.0×~0.5=1.0)
+    # are better balanced and no single loss overpowers the others.
+    geometry_loss_weight=2.0,
+
     decode_head=dict(
         type='DeepRoofMask2FormerHead',
         in_channels=[192, 384, 768, 1536],
@@ -117,9 +120,11 @@ model = dict(
             use_sigmoid=False,
             loss_weight=2.0,
             reduction='mean',
-            # bg=1, flat=1, sloped=10, no_obj=0.1
-            # Dataset is 95% flat — 10x weight on sloped forces class discrimination
-            class_weight=[1.0, 1.0, 10.0, 0.1]),
+            # bg=1, flat=1, sloped=3, no_obj=0.1
+            # FIX: Reduced sloped weight from 10→3. At 10x, gradient dominated
+            # and pushed model to predict flat for everything. At 3x it still
+            # forces class discrimination without destabilizing the whole loss.
+            class_weight=[1.0, 1.0, 3.0, 0.1]),
         loss_mask=dict(
             type='mmdet.CrossEntropyLoss',
             use_sigmoid=True,
@@ -140,7 +145,11 @@ model = dict(
             assigner=dict(
                 type='mmdet.HungarianAssigner',
                 match_costs=[
-                    dict(type='mmdet.ClassificationCost', weight=2.0),
+                    # FIX Bug #6: Add class_weight to cost to match the loss weights.
+                    # Without this, the matcher assigns queries to sloped instances with
+                    # the same cost as flat, so very few queries supervise sloped class.
+                    dict(type='mmdet.ClassificationCost', weight=2.0,
+                         class_weight=[1.0, 1.0, 3.0, 0.1]),
                     dict(
                         type='mmdet.CrossEntropyLossCost',
                         weight=5.0,
@@ -176,8 +185,6 @@ train_dataloader = dict(
 val_pipeline = []
 
 # Test/inference pipeline: standard mmseg pipeline for external images.
-# Resize to training resolution (512×512 = native OmniCity size) to keep
-# the feature distribution consistent with what the model learned.
 test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='Resize', scale=(512, 512), keep_ratio=False),
@@ -206,8 +213,8 @@ test_evaluator = val_evaluator
 
 # 3. Optimizer & Scheduler (A100 Best Practice)
 optimizer = dict(
-    type='AdamW', 
-    lr=0.0001, 
+    type='AdamW',
+    lr=0.0001,
     weight_decay=0.05,
     eps=1e-8,
     betas=(0.9, 0.999)
@@ -216,16 +223,18 @@ optimizer = dict(
 optim_wrapper = dict(
     type='OptimWrapper',
     optimizer=optimizer,
-    clip_grad=dict(max_norm=0.01, norm_type=2) # Stable gradients for geometry
+    # FIX Bug #1 (production): max_norm=1.0 is the standard for Mask2Former.
+    # 0.01 was 100x too aggressive — clipped geometry gradients to near-zero.
+    clip_grad=dict(max_norm=1.0, norm_type=2)
 )
 
 param_scheduler = [
     # Linear Warmup for 1500 iterations
     dict(
-        type='LinearLR', 
-        start_factor=0.001, 
-        by_epoch=False, 
-        begin=0, 
+        type='LinearLR',
+        start_factor=0.001,
+        by_epoch=False,
+        begin=0,
         end=1500
     ),
     # Poly Decay for the rest of 100k iters
@@ -242,5 +251,11 @@ param_scheduler = [
 # 4. Runtime Config
 train_cfg = dict(type='IterBasedTrainLoop', max_iters=100000, val_interval=5000)
 default_hooks = dict(
-    checkpoint=dict(type='CheckpointHook', by_epoch=False, interval=5000, max_keep_ckpts=3)
+    checkpoint=dict(
+        type='CheckpointHook',
+        by_epoch=False,
+        interval=5000,
+        max_keep_ckpts=3,
+        save_best='mIoU',
+    )
 )

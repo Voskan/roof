@@ -66,14 +66,25 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
         if decode_head_cfg is None:
             return out
 
+        def _strip_ctor_type(d: Dict[str, Any]) -> Dict[str, Any]:
+            """Drop registry `type` keys for objects instantiated via direct ctor."""
+            out = dict(d)
+            out.pop('type', None)
+            return out
+
         def _upgrade_encoder_layer_cfg(layer_cfg_like: Any) -> Dict[str, Any]:
             layer_cfg = cls._to_plain_dict(layer_cfg_like) or {}
             if 'attn_cfgs' in layer_cfg and 'self_attn_cfg' not in layer_cfg:
                 layer_cfg['self_attn_cfg'] = copy.deepcopy(layer_cfg.pop('attn_cfgs'))
             if 'ffn_cfgs' in layer_cfg and 'ffn_cfg' not in layer_cfg:
                 layer_cfg['ffn_cfg'] = copy.deepcopy(layer_cfg.pop('ffn_cfgs'))
+            if isinstance(layer_cfg.get('self_attn_cfg'), dict):
+                layer_cfg['self_attn_cfg'] = _strip_ctor_type(layer_cfg['self_attn_cfg'])
+            if isinstance(layer_cfg.get('ffn_cfg'), dict):
+                layer_cfg['ffn_cfg'] = _strip_ctor_type(layer_cfg['ffn_cfg'])
             layer_cfg.pop('operation_order', None)
             layer_cfg.pop('feedforward_channels', None)
+            layer_cfg.pop('type', None)
             return layer_cfg
 
         def _upgrade_decoder_layer_cfg(layer_cfg_like: Any) -> Dict[str, Any]:
@@ -92,29 +103,47 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
                     layer_cfg.setdefault('cross_attn_cfg', copy.deepcopy(attn_cfgs))
             if 'ffn_cfgs' in layer_cfg and 'ffn_cfg' not in layer_cfg:
                 layer_cfg['ffn_cfg'] = copy.deepcopy(layer_cfg.pop('ffn_cfgs'))
+            if isinstance(layer_cfg.get('self_attn_cfg'), dict):
+                layer_cfg['self_attn_cfg'] = _strip_ctor_type(layer_cfg['self_attn_cfg'])
+            if isinstance(layer_cfg.get('cross_attn_cfg'), dict):
+                layer_cfg['cross_attn_cfg'] = _strip_ctor_type(layer_cfg['cross_attn_cfg'])
+            if isinstance(layer_cfg.get('ffn_cfg'), dict):
+                layer_cfg['ffn_cfg'] = _strip_ctor_type(layer_cfg['ffn_cfg'])
             layer_cfg.pop('operation_order', None)
             layer_cfg.pop('feedforward_channels', None)
+            layer_cfg.pop('type', None)
             return layer_cfg
 
         pixel_decoder = cls._to_plain_dict(decode_head_cfg.get('pixel_decoder'))
         if pixel_decoder is not None:
             encoder = cls._to_plain_dict(pixel_decoder.get('encoder'))
             if encoder is not None:
+                encoder.pop('type', None)
                 if 'transformerlayers' in encoder and 'layer_cfg' not in encoder:
                     encoder['layer_cfg'] = _upgrade_encoder_layer_cfg(encoder.pop('transformerlayers'))
                 elif 'layer_cfg' in encoder:
                     encoder['layer_cfg'] = _upgrade_encoder_layer_cfg(encoder['layer_cfg'])
                 pixel_decoder['encoder'] = encoder
+            pixel_pos = cls._to_plain_dict(pixel_decoder.get('positional_encoding'))
+            if pixel_pos is not None:
+                pixel_pos.pop('type', None)
+                pixel_decoder['positional_encoding'] = pixel_pos
             decode_head_cfg['pixel_decoder'] = pixel_decoder
 
         transformer_decoder = cls._to_plain_dict(decode_head_cfg.get('transformer_decoder'))
         if transformer_decoder is not None:
+            transformer_decoder.pop('type', None)
             if 'transformerlayers' in transformer_decoder and 'layer_cfg' not in transformer_decoder:
                 transformer_decoder['layer_cfg'] = _upgrade_decoder_layer_cfg(
                     transformer_decoder.pop('transformerlayers'))
             elif 'layer_cfg' in transformer_decoder:
                 transformer_decoder['layer_cfg'] = _upgrade_decoder_layer_cfg(transformer_decoder['layer_cfg'])
             decode_head_cfg['transformer_decoder'] = transformer_decoder
+
+        pos_enc = cls._to_plain_dict(decode_head_cfg.get('positional_encoding'))
+        if pos_enc is not None:
+            pos_enc.pop('type', None)
+            decode_head_cfg['positional_encoding'] = pos_enc
 
         return decode_head_cfg
 

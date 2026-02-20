@@ -32,6 +32,7 @@ class DeepRoofDataset(BaseSegDataset):
                  img_suffix: str = '.png',
                  seg_map_suffix: str = '.png',
                  normal_suffix: str = '.npy',
+                 image_size: Optional[tuple] = (1024, 1024),
                  data_root: Optional[str] = None,
                  test_mode: bool = False,
                  ignore_index: int = 255,
@@ -39,6 +40,14 @@ class DeepRoofDataset(BaseSegDataset):
                  **kwargs):
         
         self.normal_suffix = normal_suffix
+        if image_size is None:
+            self.image_size = None
+        elif isinstance(image_size, int):
+            self.image_size = (image_size, image_size)
+        elif isinstance(image_size, (tuple, list)) and len(image_size) == 2:
+            self.image_size = (int(image_size[0]), int(image_size[1]))
+        else:
+            raise ValueError(f'Invalid image_size={image_size}. Use int, (h, w), or None.')
         self.augmentor = GoogleMapsAugmentation(use_shadow=not test_mode)
         
         # BaseSegDataset handles basic file list loading if ann_file follows standard MM format
@@ -129,6 +138,45 @@ class DeepRoofDataset(BaseSegDataset):
             semantic_mask = augmented['mask']
             normals = augmented['normals']
             instance_mask = augmented['instance_mask']
+
+        # Keep per-batch target shapes consistent for Mask2Former losses.
+        # RandomScale introduces variable resolutions, but mmdet's Mask2Former
+        # stacks mask targets across the batch and expects identical HxW.
+        target_size = getattr(self, 'image_size', None)
+        if target_size is not None:
+            target_h, target_w = int(target_size[0]), int(target_size[1])
+
+            def _to_numpy(arr):
+                if isinstance(arr, torch.Tensor):
+                    return arr.detach().cpu().numpy()
+                return arr
+
+            img_np = _to_numpy(img)
+            sem_np = _to_numpy(semantic_mask)
+            normal_np = _to_numpy(normals)
+            inst_np = _to_numpy(instance_mask)
+
+            if img_np.shape[:2] != (target_h, target_w):
+                img_np = cv2.resize(img_np, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            if sem_np.shape[:2] != (target_h, target_w):
+                sem_np = cv2.resize(sem_np, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+            if inst_np.shape[:2] != (target_h, target_w):
+                inst_dtype = inst_np.dtype
+                inst_np = cv2.resize(inst_np.astype(np.int32), (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+                inst_np = inst_np.astype(inst_dtype)
+            if normal_np.shape[:2] != (target_h, target_w):
+                normal_np = cv2.resize(normal_np, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+            # Re-normalize normal vectors after interpolation.
+            if normal_np.ndim == 3 and normal_np.shape[2] == 3:
+                nrm = np.linalg.norm(normal_np, axis=2, keepdims=True)
+                valid = nrm > 1e-6
+                normal_np = np.where(valid, normal_np / np.clip(nrm, 1e-6, None), normal_np)
+
+            img = img_np
+            semantic_mask = sem_np
+            normals = normal_np
+            instance_mask = inst_np
 
         # 6. Convert to tensors
         # Image: HWC uint8 BGR -> CHW float [0, 255]

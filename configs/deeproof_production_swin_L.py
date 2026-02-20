@@ -65,16 +65,13 @@ model = dict(
             norm_cfg=dict(type='GN', num_groups=32),
             act_cfg=dict(type='ReLU'),
             encoder=dict(
-                type='mmdet.DetrTransformerEncoder',
                 num_layers=6,
                 layer_cfg=dict(
                     self_attn_cfg=dict(
-                        type='mmdet.MultiScaleDeformableAttention',
                         embed_dims=256,
                         num_levels=3,
                         batch_first=True),
                     ffn_cfg=dict(
-                        type='mmdet.FFN',
                         embed_dims=256,
                         feedforward_channels=1024,
                         num_fcs=2,
@@ -82,18 +79,16 @@ model = dict(
                         act_cfg=dict(type='ReLU', inplace=True))),
                 init_cfg=None),
             positional_encoding=dict(
-                type='mmdet.SinePositionalEncoding', num_feats=128, normalize=True),
+                num_feats=128, normalize=True),
             init_cfg=None),
         enforce_decoder_input_project=False,
         positional_encoding=dict(
-            type='mmdet.SinePositionalEncoding', num_feats=128, normalize=True),
+            num_feats=128, normalize=True),
         transformer_decoder=dict(
-            type='mmdet.Mask2FormerTransformerDecoder',
             return_intermediate=True,
             num_layers=9,
             layer_cfg=dict(
                 self_attn_cfg=dict(
-                    type='mmdet.MultiheadAttention',
                     embed_dims=256,
                     num_heads=8,
                     attn_drop=0.0,
@@ -101,7 +96,6 @@ model = dict(
                     dropout_layer=None,
                     batch_first=True),
                 cross_attn_cfg=dict(
-                    type='mmdet.MultiheadAttention',
                     embed_dims=256,
                     num_heads=8,
                     attn_drop=0.0,
@@ -109,7 +103,6 @@ model = dict(
                     dropout_layer=None,
                     batch_first=True),
                 ffn_cfg=dict(
-                    type='mmdet.FFN',
                     embed_dims=256,
                     feedforward_channels=2048,
                     num_fcs=2,
@@ -173,6 +166,7 @@ train_dataloader = dict(
         img_suffix='.jpg',
         seg_map_suffix='.png',
         normal_suffix='.npy',
+        image_size=(1024, 1024),
         pipeline=train_pipeline
     )
 )
@@ -217,6 +211,7 @@ val_dataloader = dict(
         img_suffix='.jpg',
         seg_map_suffix='.png',
         normal_suffix='.npy',
+        image_size=(1024, 1024),
         pipeline=val_pipeline
     )
 )

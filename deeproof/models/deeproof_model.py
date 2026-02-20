@@ -377,10 +377,23 @@ class DeepRoofMask2Former(Mask2FormerBase):
                     gt_normals_list.append(avg_n)
                 matched_targets = torch.stack(gt_normals_list)
 
-            # Compute cosine similarity loss
-            loss_geo = self.geometry_loss(matched_preds, matched_targets)
-            total_geo_loss = total_geo_loss + loss_geo * matched_src_idx.numel()
-            num_pos_total += matched_src_idx.numel()
+            # Compute cosine similarity loss ONLY on valid foreground objects (label > 0)
+            # Find the gt_labels for the matched targets.
+            matched_labels = []
+            if hasattr(gt_instances, 'labels') and gt_instances.labels is not None:
+                matched_labels = gt_instances.labels[matched_tgt_idx]
+            else:
+                # If labels are somehow missing, assume foreground.
+                matched_labels = torch.ones(len(matched_tgt_idx), dtype=torch.long, device=device)
+            
+            fg_mask = matched_labels > 0
+            
+            if fg_mask.any():
+                matched_preds_fg = matched_preds[fg_mask]
+                matched_targets_fg = matched_targets[fg_mask]
+                loss_geo = self.geometry_loss(matched_preds_fg, matched_targets_fg)
+                total_geo_loss = total_geo_loss + loss_geo * matched_preds_fg.shape[0]
+                num_pos_total += matched_preds_fg.shape[0]
 
         if num_pos_total > 0:
             return total_geo_loss / num_pos_total

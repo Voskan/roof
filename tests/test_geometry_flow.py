@@ -93,6 +93,7 @@ def test_geometry_flow():
         gt_inst.__len__.return_value = 1
         gt_inst.normals = target_n.unsqueeze(0)
         gt_inst.masks = MockMask()
+        gt_inst.labels = torch.tensor([1], dtype=torch.long)
         ds.gt_instances = gt_inst
         ds.gt_normals = MagicMock()
         ds.gt_normals.data = target_n.view(3, 1, 1).expand(3, H, W)

@@ -120,11 +120,9 @@ model = dict(
             use_sigmoid=False,
             loss_weight=2.0,
             reduction='mean',
-            # bg=1, flat=1, sloped=3, no_obj=0.1
-            # FIX: Reduced sloped weight from 10→3. At 10x, gradient dominated
-            # and pushed model to predict flat for everything. At 3x it still
-            # forces class discrimination without destabilizing the whole loss.
-            class_weight=[1.0, 1.0, 3.0, 0.1]),
+            # bg=1, flat=1, sloped=10, no_obj=0.1
+            # FIX: Increased sloped weight from 3->10 to combat extreme class imbalance.
+            class_weight=[1.0, 1.0, 10.0, 0.1]),
         loss_mask=dict(
             type='mmdet.CrossEntropyLoss',
             use_sigmoid=True,

@@ -180,4 +180,4 @@ $$L_{total} = \lambda_{mask}L_{Dice} + \lambda_{cls}L_{CrossEntropy} + \lambda_{
 * **Risk:** Swin-Large is too slow for production.
     * *Mitigation:* Use TensorRT optimization and FP16 (half-precision) inference.
 * **Risk:** Flat roofs detected as sloped due to texture noise.
-    * *Mitigation:* Post-processing rule: if calculated slope < 5°, force to 0°.
+    * *Mitigation:* Post-processing rule: if calculated slope < 2°, force to 0°.

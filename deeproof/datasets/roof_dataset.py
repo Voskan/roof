@@ -182,7 +182,7 @@ class DeepRoofDataset(BaseSegDataset):
 
         gt_instances = InstanceData()
         inst_ids = torch.unique(inst_map)
-        inst_ids = inst_ids[inst_ids > 0]
+        # FIX: Do not filter out 0 (background). Mask2Former MUST see class 0 to learn it.
 
         if inst_ids.numel() > 0:
             masks = torch.stack([(inst_map == i) for i in inst_ids], dim=0).bool()
@@ -194,15 +194,24 @@ class DeepRoofDataset(BaseSegDataset):
                     label = 1
                 else:
                     cls_ids, counts = torch.unique(sem_vals, return_counts=True)
+                    # If this instance is purely background, it will simply take class 0.
+                    # Otherwise, assign it the majority foreground class.
                     fg = cls_ids > 0
                     if fg.any():
-                        cls_ids = cls_ids[fg]
-                        counts = counts[fg]
-                    label = int(cls_ids[counts.argmax()].item()) if cls_ids.numel() > 0 else 1
+                        fg_cls_ids = cls_ids[fg]
+                        fg_counts = counts[fg]
+                        label = int(fg_cls_ids[fg_counts.argmax()].item())
+                    else:
+                        label = 0
                 labels.append(label)
 
-                avg_n = normal_tensor[:, m].mean(dim=1)
-                avg_n = F.normalize(avg_n, p=2, dim=0)
+                if label == 0:
+                    # Background doesn't have a valid surface normal. 
+                    # Default to pointing straight up (0, 0, 1)
+                    avg_n = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=normal_tensor.device)
+                else:
+                    avg_n = normal_tensor[:, m].mean(dim=1)
+                    avg_n = F.normalize(avg_n, p=2, dim=0)
                 normals_per_inst.append(avg_n)
 
             labels = torch.tensor(labels, dtype=torch.long)

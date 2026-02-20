@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.Python
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# ML artefacts
+*.pth
+*.ckpt
+*.pt
+work_dirs/
+wandb/
+runs/
+*.log
+*.json
+
+# Data
+data/
+*.npy
+*.npz
+*.pkl
+*.h5
+*.hdf5
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# MMCV compiled extensions
+mmcv/_ext*.so

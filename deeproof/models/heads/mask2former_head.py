@@ -118,9 +118,9 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
         return decode_head_cfg
 
     def __init__(self, **kwargs):
-        # Compatibility shim for newer OpenMMLab stacks that expect `layer_cfg`.
-        if self._runtime_expects_layer_cfg():
-            kwargs = self._upgrade_legacy_transformer_cfg(kwargs)
+        # Compatibility shim for OpenMMLab config schema differences.
+        # Always normalize legacy keys; no-op on already-modern configs.
+        kwargs = self._upgrade_legacy_transformer_cfg(kwargs)
         super().__init__(**kwargs)
         self.last_query_embeddings: Optional[torch.Tensor] = None
         self.last_cls_scores: Optional[Any] = None

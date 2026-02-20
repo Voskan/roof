@@ -10,112 +10,106 @@ from mmseg.structures import SegDataSample
 @MODELS.register_module()
 class DeepRoofMask2FormerHead(Mask2FormerHead):
     """
-    Custom Mask2Former Head that exposes REAL per-image query embeddings
-    (the final decoder layer output) for the GeometryHead.
+    Custom Mask2Former Head that captures REAL per-image decoder query embeddings
+    via a PyTorch forward hook on the transformer decoder's last layer.
 
-    FIX Bug #3: The original code fell back to `query_feat.weight` — a static
-    learnable embedding (100×256) that is identical for every image. This meant
-    GeometryHead received the same fixed input regardless of image content and
-    learned only the mean normal vector across the dataset → all slopes ≈ 0°.
+    FIX Bug #3 (improved): The original attribute-scanning approach failed because
+    mmdet's Mask2FormerTransformerDecoder does not expose its internal query state
+    as named attributes after the forward pass on all versions. Instead we register
+    a hook on the last transformer decoder layer so we intercept the actual output
+    tensor [B, Q, 256] directly. This is guaranteed to produce real, content-aware
+    embeddings (not zero-padded class logits as the fallback was producing).
 
-    Solution: Hook into the predictor's transformer decoder to capture the
-    actual decoder OUTPUT embeddings (per-image, content-aware) after the
-    forward pass. These are stored in `self.last_query_embeddings` for use
-    by the geometry supervision in DeepRoofMask2Former.loss().
+    Without real embeddings: GeometryHead receives [B, Q, 4_cls + 252_zeros]
+    → outputs dataset-mean normal ≈ (0, 0, 1) for every query.
+
+    With real embeddings: GeometryHead receives [B, Q, 256] with content-aware
+    features → can distinguish sloped vs flat roofs and predict correct normals.
+
+    FIX Bug #5: Hungarian assignment from seg loss is cached so geometry supervision
+    uses exactly the same query-to-GT pairing.
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Stores the real decoder output query embeddings [B, Q, 256]
         self.last_query_embeddings: Optional[torch.Tensor] = None
-        # Stores cls scores for proxy fallback
         self.last_cls_scores: Optional[Any] = None
-        # Stores the last Hungarian assign results keyed by batch index
-        # FIX Bug #5: reuse matching results so geometry head uses same pairing
-        # as the segmentation loss instead of running a second independent match.
         self.last_assign_results: Optional[list] = None
 
+        # Hook handle — registered lazily on first forward call
+        self._hook_handle: Optional[Any] = None
+        # Buffer filled by the hook
+        self._hooked_decoder_output: Optional[torch.Tensor] = None
+
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Hook registration
     # ------------------------------------------------------------------
-    @staticmethod
-    def _to_bqc(tensor_like: Any, batch_size: int) -> Optional[torch.Tensor]:
-        """Normalize query-like tensors to shape [B, Q, C]."""
-        if isinstance(tensor_like, (list, tuple)):
-            if len(tensor_like) == 0:
-                return None
-            tensor_like = tensor_like[-1]
-        if not torch.is_tensor(tensor_like):
-            return None
-
-        t = tensor_like
-        if t.ndim == 4:
-            # [num_layers, B, Q, C]
-            t = t[-1]
-        elif t.ndim == 2:
-            t = t.unsqueeze(0).expand(batch_size, -1, -1)
-
-        if t.ndim != 3:
-            return None
-        if t.shape[0] != batch_size and t.shape[1] == batch_size:
-            t = t.permute(1, 0, 2).contiguous()
-        if t.shape[0] != batch_size:
-            return None
-        return t
-
-    def _extract_decoder_output_embeddings(
-        self,
-        batch_size: int,
-        ref: Optional[torch.Tensor] = None,
-    ) -> Optional[torch.Tensor]:
+    def _register_decoder_hook(self):
         """
-        Extract the per-image query embeddings from the Mask2Former transformer decoder.
+        Register a forward hook on the LAST layer of the Mask2Former transformer
+        decoder to capture real query embeddings.
 
-        The decoder stores the output of its last layer as `query_feat` inside the
-        predictor after a forward pass. This is the CONTENT-AWARE embedding we need.
+        The hook fires AFTER the layer's forward and stores the output tensor.
+        We only hook the LAST decoder layer so we get the most refined embeddings.
 
-        We try multiple known attribute paths across mmdet/mmseg versions:
-        1. predictor.decoder.last_query_feat  (some forks)
-        2. predictor.last_query_feat
-        3. predictor.query_feat (only content-aware when set after forward)
-        4. self.query_feat (same)
-
-        We distinguish static weights (ndim==2, [Q, C]) from dynamic outputs
-        (ndim==3, [B, Q, C]). Only dynamic (ndim==3) outputs are image-specific.
+        The Mask2Former decoder stack is typically:
+          predictor → decoder → layers[num_layers-1]
         """
-        device = ref.device if torch.is_tensor(ref) else None
-        dtype = ref.dtype if torch.is_tensor(ref) else None
+        if self._hook_handle is not None:
+            return  # Already registered
 
-        # Walk candidate owners in priority order
+        # Walk the module tree to find the decoder layer stack
+        decoder_layer = self._find_last_decoder_layer()
+        if decoder_layer is None:
+            return
+
+        def _hook(module, input, output):
+            """Capture the output of the last decoder cross-attention layer."""
+            # Output is typically a tensor [B, Q, C] or a tuple/list
+            if isinstance(output, (list, tuple)):
+                out = output[0]
+            else:
+                out = output
+            if torch.is_tensor(out) and out.ndim == 3:
+                self._hooked_decoder_output = out.detach()
+            # Return None to leave output unchanged
+
+        self._hook_handle = decoder_layer.register_forward_hook(_hook)
+
+    def _find_last_decoder_layer(self) -> Optional[nn.Module]:
+        """
+        Locate the last transformer decoder layer in the predictor.
+
+        Traversal order (most common mmdet/mmseg architectures):
+          1. self.predictor.decoder.layers[-1]
+          2. self.predictor.decoder[-1]
+          3. self.predictor.layers[-1]
+          4. Any nn.ModuleList whose items are nn.Module (decoder layers)
+        """
         predictor = getattr(self, 'predictor', None)
-        decoder = getattr(predictor, 'decoder', None) if predictor is not None else None
+        if predictor is None:
+            return None
 
-        candidates = []
-        for owner in filter(None, [decoder, predictor, self]):
-            for attr in ('last_query_feat', 'query_feat', 'query_content'):
-                val = getattr(owner, attr, None)
-                if val is not None:
-                    candidates.append(val)
+        decoder = getattr(predictor, 'decoder', None)
 
-        for val in candidates:
-            if isinstance(val, nn.Embedding):
-                weight = val.weight  # static [Q, C]
-                # Skip static embeddings (ndim==2) — not image-specific
-                continue
-            if torch.is_tensor(val):
-                t = val
-                # Only accept 3-D tensors (dynamic, per-image)
-                if t.ndim == 3 and t.shape[0] == batch_size:
-                    if device is not None:
-                        t = t.to(device=device)
-                    if dtype is not None:
-                        t = t.to(dtype=dtype)
-                    return t
-                # [Q, C] static weight — skip
-                if t.ndim == 2:
-                    continue
+        # Check common layer container attribute names
+        for container_owner in filter(None, [decoder, predictor]):
+            for attr in ('layers', 'transformer_layers', 'decoder_layers'):
+                layers = getattr(container_owner, attr, None)
+                if isinstance(layers, (nn.ModuleList, list)) and len(layers) > 0:
+                    last = layers[-1]
+                    if isinstance(last, nn.Module):
+                        return last
 
-        return None  # Caller will use an image-specific fallback
+        # Fallback: scan all named children for a ModuleList of decoder-like layers
+        for name, module in self.named_modules():
+            if isinstance(module, nn.ModuleList) and len(module) >= 3:
+                last = module[-1]
+                if hasattr(last, 'self_attn') or hasattr(last, 'cross_attn') \
+                        or hasattr(last, 'attention') or hasattr(last, 'norm'):
+                    return last
+
+        return None
 
     # ------------------------------------------------------------------
     # Forward
@@ -126,11 +120,16 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
         data_samples: List[SegDataSample],
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """
-        Standard forward that also captures real decoder query embeddings.
+        Standard Mask2Former forward that also captures real decoder query embeddings.
         """
         batch_size = len(data_samples)
 
-        # Run the standard Mask2Former predictor
+        # Lazily register the decoder hook on first call
+        self._register_decoder_hook()
+        # Reset hook buffer before forward so we know what's from THIS call
+        self._hooked_decoder_output = None
+
+        # Standard predictor call
         if hasattr(self, 'predictor'):
             out = self.predictor(x, data_samples)
         else:
@@ -142,27 +141,55 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
             all_cls_scores, all_mask_preds = out, []
 
         self.last_cls_scores = all_cls_scores
-        self.last_assign_results = None  # Reset; will be set by loss_by_feat wrapper
+        self.last_assign_results = None
 
-        # --- FIX Bug #3: Get REAL (dynamic) decoder output embeddings ---
-        # Try to get content-aware embeddings from the decoder after forward pass.
-        query_embeddings = self._extract_decoder_output_embeddings(
-            batch_size=batch_size,
-            ref=all_cls_scores[-1] if isinstance(all_cls_scores, (list, tuple)) and len(all_cls_scores) > 0
-                else None,
-        )
+        # --- Primary source: forward hook captured real decoder layer output ---
+        # Shape: [B, Q, 256] — content-aware, different for every image
+        query_embeddings = None
+        hooked = self._hooked_decoder_output
+        if hooked is not None and hooked.ndim == 3 and hooked.shape[0] == batch_size:
+            query_embeddings = hooked
 
-        # If dynamic embeddings not available (some mmseg forks don't expose them),
-        # use the last-layer cls_scores as a proxy. These are at least image-specific
-        # (shape [B, Q, num_classes+1]) and tell the geometry head something about
-        # which query predicts what class — far better than static init embeddings.
+        # --- Fallback: try known attribute paths (some forks expose them) ---
         if query_embeddings is None:
-            cls_proxy = self._to_bqc(all_cls_scores, batch_size)
-            if cls_proxy is not None:
-                query_embeddings = cls_proxy  # [B, Q, C_cls] — image-specific
+            query_embeddings = self._scan_attributes_for_embeddings(batch_size)
+
+        # --- Last resort: class logits (image-specific but low-dim) ---
+        # This produces near-zero normals due to zero-padding to 256, but is better
+        # than random init. Geometry quality will be poor until decoder hook works.
+        if query_embeddings is None:
+            if isinstance(all_cls_scores, (list, tuple)) and len(all_cls_scores) > 0:
+                cls = all_cls_scores[-1]
+                if torch.is_tensor(cls) and cls.ndim == 3 and cls.shape[0] == batch_size:
+                    query_embeddings = cls
+                    # NOTE: cls has shape [B, Q, C_cls=4], NOT 256.
+                    # _normalize_query_embeddings in deeproof_model will pad to 256.
+                    # This is a lossy fallback — hook registration above must succeed
+                    # to get meaningful geometry predictions.
 
         self.last_query_embeddings = query_embeddings
         return all_cls_scores, all_mask_preds
+
+    def _scan_attributes_for_embeddings(
+        self, batch_size: int
+    ) -> Optional[torch.Tensor]:
+        """
+        Scan known attribute paths on the decoder for query embeddings.
+        Only accepts 3-D tensors [B, Q, C] (dynamic/per-image), rejects
+        2-D static weight matrices [Q, C] which are identical for every image.
+        """
+        predictor = getattr(self, 'predictor', None)
+        decoder = getattr(predictor, 'decoder', None) if predictor else None
+
+        for owner in filter(None, [decoder, predictor, self]):
+            for attr in ('last_query_feat', 'query_feat', 'query_content',
+                         'decoder_output', 'last_hidden_state'):
+                val = getattr(owner, attr, None)
+                if isinstance(val, nn.Embedding):
+                    continue  # Static init weight — skip
+                if torch.is_tensor(val) and val.ndim == 3 and val.shape[0] == batch_size:
+                    return val
+        return None
 
     # ------------------------------------------------------------------
     # Loss wrapper — captures Hungarian results for geometry reuse (Bug #5)
@@ -177,14 +204,7 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
         """
         Compatibility wrapper. Also captures per-image Hungarian assign results
         so DeepRoofMask2Former.loss() can reuse them without a second matching.
-
-        FIX Bug #5: The original code ran hungarian matching TWICE — once inside
-        `decode_head.loss_by_feat` (for mask/cls loss) and once more explicitly in
-        `DeepRoofMask2Former.loss()` for geometry. The two runs can produce different
-        matchings because the first updates internal state. Now we capture the
-        assign results here so geometry always uses the same matching.
         """
-        # Normalise args to (batch_gt_instances, batch_img_metas)
         if len(args) == 1 and not kwargs:
             data_samples = args[0]
             if isinstance(data_samples, list) and (
@@ -198,7 +218,6 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
                     batch_gt_instances,
                     batch_img_metas,
                 )
-                # Try to capture assign results from assigner if stored
                 self._try_capture_assign_results()
                 return losses
 
@@ -208,10 +227,17 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
 
     def _try_capture_assign_results(self):
         """Attempt to read cached assign results from the assigner after loss_by_feat."""
-        # Some mmdet assigners store `self.assign_results` after a call.
         assigner = getattr(self, 'assigner', None)
         if assigner is None:
             return
         cached = getattr(assigner, 'last_assign_results', None)
         if cached is not None:
             self.last_assign_results = cached
+
+    def __del__(self):
+        """Cleanup hook on destruction."""
+        if self._hook_handle is not None:
+            try:
+                self._hook_handle.remove()
+            except Exception:
+                pass

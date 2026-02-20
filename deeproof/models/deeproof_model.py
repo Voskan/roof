@@ -46,6 +46,7 @@ class DeepRoofMask2Former(Mask2FormerBase):
 
     def __init__(self,
                  geometry_head: dict,
+                 geometry_loss: Optional[dict] = None,
                  geometry_loss_weight: float = 2.0,
                  **kwargs):
         super().__init__(**kwargs)
@@ -54,9 +55,13 @@ class DeepRoofMask2Former(Mask2FormerBase):
         # 1. Initialize Geometry Head (MLP that takes query embeddings)
         self.geometry_head = MODELS.build(geometry_head)
 
-        # 2. Define Geometry Loss (Cosine Similarity)
-        self.geometry_loss = CosineSimilarityLoss(loss_weight=geometry_loss_weight)
-        self.geometry_loss_weight = geometry_loss_weight
+        # 2. Define Geometry Loss (SOTA Refinement)
+        if geometry_loss is not None:
+             self.geometry_loss = MODELS.build(geometry_loss)
+             self.geometry_loss_weight = geometry_loss.get('loss_weight', 1.0)
+        else:
+             self.geometry_loss = CosineSimilarityLoss(loss_weight=geometry_loss_weight)
+             self.geometry_loss_weight = geometry_loss_weight
 
     @staticmethod
     def _normalize_test_cfg(test_cfg):

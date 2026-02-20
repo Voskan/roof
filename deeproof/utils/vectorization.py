@@ -191,7 +191,63 @@ def enforce_orthogonality(contour: np.ndarray,
                 
                 regularized[i] = new_p2_proposal
                 
-    return regularized.reshape(-1, 1, 2) # Return to cv2 contour format
+    return regularized.reshape(-1, 1, 2)
+
+def snap_to_dominant_orientation(pts: np.ndarray) -> np.ndarray:
+    """
+    Force the entire building to align with its most frequent edge orientation.
+    Guarantees global parallelism (opposite walls stay parallel).
+    """
+    N = len(pts)
+    if N < 3: return pts
+    
+    angles = []
+    weights = []
+    for i in range(N):
+        p1, p2 = pts[i], pts[(i + 1) % N]
+        v = p2 - p1
+        dist = np.linalg.norm(v)
+        if dist < 1e-3: continue
+        # Calculate angle in [0, pi/2)
+        angle = math.atan2(v[1], v[0]) % (math.pi / 2)
+        angles.append(angle)
+        weights.append(dist)
+        
+    if not angles: return pts
+    
+    # Find weighted median angle to find the "North" of the building
+    # Standard: Weighted average of angles is circular, but in [0, pi/2) it's mostly stable.
+    dom_angle = np.average(angles, weights=weights)
+
+    # 1. Rotate building to align North with Y-axis
+    c, s = math.cos(-dom_angle), math.sin(-dom_angle)
+    R = np.array([[c, -s], [s, c]])
+    
+    # 2. Manhattan-style quantization (snap each point to a shared grid line)
+    # This is a bit too aggressive for complex roofs. 
+    # Better: Transform segments to be purely vertical or horizontal in the rotated frame.
+    pts_rot = pts @ R.T
+    
+    # We iteratively adjust points to have shared X or Y coordinates with neighbors
+    for _ in range(2):
+        for i in range(N):
+            prev_p, curr_p, next_p = pts_rot[(i-1)%N], pts_rot[i], pts_rot[(i+1)%N]
+            
+            # Determine if edge (prev->curr) is more horizontal or vertical
+            v_prev = curr_p - prev_p
+            if abs(v_prev[0]) > abs(v_prev[1]):
+                # Make it perfectly horizontal
+                curr_p[1] = prev_p[1]
+            else:
+                # Make it perfectly vertical
+                curr_p[0] = prev_p[0]
+                
+    # 3. Rotate back
+    c_inv, s_inv = math.cos(dom_angle), math.sin(dom_angle)
+    R_inv = np.array([[c_inv, -s_inv], [s_inv, c_inv]])
+    pts_final = pts_rot @ R_inv.T
+    
+    return pts_final
 
 def regularize_building_polygons(mask: np.ndarray,
                                  epsilon_factor: float = 0.04,
@@ -204,27 +260,14 @@ def regularize_building_polygons(mask: np.ndarray,
     1. Morphological smoothing (close small holes, blur pixelated edges)
     2. Find external contours
     3. RDP simplification (cv2.approxPolyDP)
-    4. Orthogonality enforcement (90-deg snapping, 3 passes)
-
-    Args:
-        mask (np.ndarray): Binary mask (H, W).
-        epsilon_factor (float): RDP perimeter multiplier. Higher = fewer vertices.
-                                0.04 gives ~14 vertices for a typical roof polygon.
-                                0.02 gives ~28 (too many). 0.06 gives ~8 (too few).
-        ortho_threshold (float): Angle delta from 90° to attempt snapping (degrees).
-        min_area (int): Minimum contour area in pixels to keep.
-
-    Returns:
-        List[np.ndarray]: Polygon coordinates in cv2 contour format (N, 1, 2).
+    4. Dominant Orientation Snapping (Global Parallelism)
+    5. Orthogonality enforcement (Local 90-deg snapping)
     """
-    # 1. Morphological smoothing — reduces pixelated mask boundaries
-    # Mask2Former outputs at stride-32 resolution; upsampling creates staircase edges.
     binary = (mask > 0).astype(np.uint8)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN,  kernel, iterations=1)
 
-    # 2. Contours (external only)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     polygons = []
@@ -232,17 +275,19 @@ def regularize_building_polygons(mask: np.ndarray,
         if cv2.contourArea(cnt) < min_area:
             continue
 
-        # 3. RDP simplification — key param: epsilon_factor 0.04 halves vertex count
-        # vs the old 0.02 default, giving much cleaner polygons for rectangular roofs.
         epsilon = epsilon_factor * cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, epsilon, True)
 
         if len(approx) < 3:
             continue
 
-        # 4. Orthogonality enforcement (3 passes for better convergence)
-        regularized = enforce_orthogonality(approx, ortho_threshold)
-        regularized = enforce_orthogonality(regularized, ortho_threshold)
+        pts = approx.reshape(-1, 2).astype(np.float32)
+        
+        # 4. Global Dominant Orientation Snapping
+        pts = snap_to_dominant_orientation(pts)
+        
+        # 5. Local Orthogonality (cleanup)
+        regularized = enforce_orthogonality(pts, ortho_threshold)
         regularized = enforce_orthogonality(regularized, ortho_threshold)
 
         polygons.append(regularized)

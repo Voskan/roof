@@ -89,6 +89,59 @@ class CrossEntropyLoss(nn.Module):
         return loss * self.loss_weight
 
 @MODELS.register_module()
+class PhysicallyWeightedNormalLoss(nn.Module):
+    """
+    Physically-Weighted Normal Loss for SOTA Surface Regression.
+    
+    This loss handles the "Flat Roof Singularity" where azimuth is undefined.
+    It splits the cosine similarity into a Z-component loss (slope) 
+    and an (X,Y)-component loss (azimuth), where the azimuth penalty 
+    is scaled by the ground-truth slope.
+    
+    Mathematical Formulation:
+    $$ L_{geo} = (1 - nz_{pred} \cdot nz_{gt}) + \lambda_{az} \cdot \sqrt{1 - nz_{gt}^2} \cdot (1 - \frac{nx_{p}nx_{g} + ny_{p}ny_{g}}{\sqrt{1-nz_p^2}\sqrt{1-nz_g^2}}) $$
+    """
+    def __init__(self, reduction='mean', loss_weight=1.0, azimuth_weight=1.0, eps=1e-8):
+        super().__init__()
+        self.reduction = reduction
+        self.loss_weight = loss_weight
+        self.azimuth_weight = azimuth_weight
+        self.eps = eps
+
+    def forward(self, pred, target, **kwargs):
+        # pred, target: (N, 3)
+        pred = F.normalize(pred, p=2, dim=-1, eps=self.eps)
+        target = F.normalize(target, p=2, dim=-1, eps=self.eps)
+
+        # 1. Slope Loss (nz component)
+        loss_nz = (1.0 - pred[:, 2] * target[:, 2])
+
+        # 2. Azimuth Weighting Factor (sin(theta_gt))
+        # Scaled by how "sloped" the roof is. For flat roofs (nz=1), weight=0.
+        az_weight = torch.sqrt((1.0 - target[:, 2]**2).clamp(min=0))
+
+        # 3. Directional Alignment (nx, ny components normalized)
+        # We only compute this if there is a horizontal component
+        p_xy = pred[:, :2]
+        t_xy = target[:, :2]
+        
+        p_xy_norm = F.normalize(p_xy, p=2, dim=-1, eps=self.eps)
+        t_xy_norm = F.normalize(t_xy, p=2, dim=-1, eps=self.eps)
+        
+        loss_xy = (1.0 - (p_xy_norm * t_xy_norm).sum(dim=-1))
+        
+        # Combined Loss
+        loss = loss_nz + self.azimuth_weight * az_weight * loss_xy
+
+        # Mask background
+        valid_mask = (target.abs().sum(dim=-1) > self.eps).float()
+        loss = loss * valid_mask
+        
+        if self.reduction == 'mean':
+            return (loss.sum() / valid_mask.sum().clamp(min=1.0)) * self.loss_weight
+        return loss.sum() * self.loss_weight
+
+@MODELS.register_module()
 class CosineSimilarityLoss(nn.Module):
     """
     Cosine Similarity Loss for Geometry Regression (Normal Vectors).

@@ -42,12 +42,12 @@ model = dict(
         hidden_dims=256
     ),
 
-    # FIX Bug #4: geometry_loss_weight 10.0 → 2.0
-    # At weight 10.0, geometry loss dominated total loss (~5.0 vs cls ~2.0),
-    # causing the model to collapse to flat_roof to minimize classification.
-    # At 2.0, all loss components (cls=2.0, mask=5.0, dice=5.0, geo=2.0×~0.5=1.0)
-    # are better balanced and no single loss overpowers the others.
-    geometry_loss_weight=2.0,
+    # Absolute Ideal: Use PhysicallyWeightedNormalLoss
+    geometry_loss=dict(
+        type='PhysicallyWeightedNormalLoss',
+        loss_weight=2.0,
+        azimuth_weight=1.5  # Heavy focus on slope-aware azimuth
+    ),
 
     decode_head=dict(
         type='DeepRoofMask2FormerHead',
@@ -56,7 +56,7 @@ model = dict(
         feat_channels=256,
         out_channels=256,
         num_classes=num_classes,
-        num_queries=100,
+        num_queries=300,
         num_transformer_feat_level=3,
         align_corners=False,
         pixel_decoder=dict(
@@ -65,58 +65,56 @@ model = dict(
             norm_cfg=dict(type='GN', num_groups=32),
             act_cfg=dict(type='ReLU'),
             encoder=dict(
+                type='mmdet.DetrTransformerEncoder',
                 num_layers=6,
-                layer_cfg=dict(
-                    self_attn_cfg=dict(
+                transformerlayers=dict(
+                    type='mmdet.BaseTransformerLayer',
+                    attn_cfgs=dict(
+                        type='mmdet.MultiScaleDeformableAttention',
                         embed_dims=256,
-                        num_heads=8,
                         num_levels=3,
-                        num_points=4,
-                        im2col_step=64,
-                        dropout=0.0,
-                        batch_first=True,
-                        norm_cfg=None,
-                        init_cfg=None),
-                    ffn_cfg=dict(
+                        batch_first=True),
+                    ffn_cfgs=dict(
+                        type='mmdet.FFN',
                         embed_dims=256,
                         feedforward_channels=1024,
                         num_fcs=2,
                         ffn_drop=0.0,
                         act_cfg=dict(type='ReLU', inplace=True))),
                 init_cfg=None),
-            positional_encoding=dict(num_feats=128, normalize=True),
+            positional_encoding=dict(
+                type='mmdet.SinePositionalEncoding', num_feats=128, normalize=True),
             init_cfg=None),
         enforce_decoder_input_project=False,
-        positional_encoding=dict(num_feats=128, normalize=True),
+        positional_encoding=dict(
+            type='mmdet.SinePositionalEncoding', num_feats=128, normalize=True),
         transformer_decoder=dict(
+            type='mmdet.Mask2FormerTransformerDecoder',
             return_intermediate=True,
             num_layers=9,
-            layer_cfg=dict(
-                self_attn_cfg=dict(
+            transformerlayers=dict(
+                type='mmdet.DetrTransformerDecoderLayer',
+                attn_cfgs=dict(
+                    type='mmdet.MultiheadAttention',
                     embed_dims=256,
                     num_heads=8,
                     attn_drop=0.0,
                     proj_drop=0.0,
                     dropout_layer=None,
                     batch_first=True),
-                cross_attn_cfg=dict(
-                    embed_dims=256,
-                    num_heads=8,
-                    attn_drop=0.0,
-                    proj_drop=0.0,
-                    dropout_layer=None,
-                    batch_first=True),
-                ffn_cfg=dict(
+                ffn_cfgs=dict(
+                    type='mmdet.FFN',
                     embed_dims=256,
                     feedforward_channels=2048,
                     num_fcs=2,
-                    act_cfg=dict(type='ReLU', inplace=True),
                     ffn_drop=0.0,
-                    dropout_layer=None,
-                    add_identity=True)),
+                    act_cfg=dict(type='ReLU', inplace=True)),
+                feedforward_channels=2048,
+                operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
+                                 'ffn', 'norm')),
             init_cfg=None),
         loss_cls=dict(
-            type='mmdet.CrossEntropyLoss',
+            type='DeepRoofCrossEntropyLoss',
             use_sigmoid=False,
             loss_weight=2.0,
             reduction='mean',
@@ -124,18 +122,15 @@ model = dict(
             # FIX: Increased sloped weight from 3->10 to combat extreme class imbalance.
             class_weight=[1.0, 1.0, 10.0, 0.1]),
         loss_mask=dict(
-            type='mmdet.CrossEntropyLoss',
-            use_sigmoid=True,
-            reduction='mean',
-            loss_weight=5.0),
+            type='DeepRoofDiceLoss',
+            loss_weight=5.0,
+            eps=1e-6,
+            reduction='mean'),
         loss_dice=dict(
-            type='mmdet.DiceLoss',
-            use_sigmoid=True,
-            activate=True,
-            reduction='mean',
-            naive_dice=True,
-            eps=1.0,
-            loss_weight=5.0),
+            type='DeepRoofDiceLoss',
+            loss_weight=5.0,
+            eps=1e-6,
+            reduction='mean'),
         train_cfg=dict(
             num_points=12544,
             oversample_ratio=3.0,
@@ -187,6 +182,25 @@ test_pipeline = [
     dict(type='Resize', scale=(512, 512), keep_ratio=False),
     dict(type='PackSegInputs'),
 ]
+
+tta_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(
+        type='TestTimeAug',
+        transforms=[
+            [
+                dict(type='Resize', scale_factor=r, keep_ratio=True)
+                for r in [0.75, 1.0, 1.25]
+            ],
+            [
+                dict(type='RandomFlip', prob=0., direction='horizontal'),
+                dict(type='RandomFlip', prob=1., direction='horizontal')
+            ],
+            [dict(type='PackSegInputs')]
+        ])
+]
+
+tta_model = dict(type='SegTTAModel')
 
 val_dataloader = dict(
     batch_size=1,

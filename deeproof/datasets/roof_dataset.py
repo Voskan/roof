@@ -39,7 +39,7 @@ class DeepRoofDataset(BaseSegDataset):
                  **kwargs):
         
         self.normal_suffix = normal_suffix
-        self.augmentor = GoogleMapsAugmentation()
+        self.augmentor = GoogleMapsAugmentation(use_shadow=not test_mode)
         
         # BaseSegDataset handles basic file list loading if ann_file follows standard MM format
         # or we can override load_data_list

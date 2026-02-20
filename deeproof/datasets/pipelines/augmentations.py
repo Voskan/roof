@@ -151,13 +151,49 @@ class GeometricAugmentation(A.ReplayCompose):
             for child in replay_node['transforms']:
                 self._transform_vectors(child, normals)
 
+class ShadowAugmentation(A.ImageOnlyTransform):
+    """
+    Simulates directional shadows on roof planes.
+    Helps the model decouple photometric intensity from geometric orientation.
+    """
+    def __init__(self, shadow_intensity=0.3, p=0.5):
+        super().__init__(p=p)
+        self.shadow_intensity = shadow_intensity
+
+    def apply(self, img, **params):
+        # Randomly darken a half-plane of the image to simulate a soft shadow edge
+        h, w = img.shape[:2]
+        angle = np.random.uniform(0, 2 * np.pi)
+        dist = np.random.uniform(-0.2, 0.2) * max(h, w)
+        
+        # Create a gradient mask
+        X, Y = np.meshgrid(np.arange(w), np.arange(h))
+        proj = X * np.cos(angle) + Y * np.sin(angle)
+        thresh = proj.mean() + dist
+        
+        mask = (proj > thresh).astype(np.float32)
+        # Blur the mask for soft shadow
+        mask = cv2.GaussianBlur(mask, (51, 51), 0)
+        
+        # Apply shadow
+        img_shadow = img.astype(np.float32)
+        img_shadow = img_shadow * (1.0 - mask[..., None] * self.shadow_intensity)
+        return img_shadow.astype(np.uint8)
+
 class GoogleMapsAugmentation(GeometricAugmentation):
     """
-    Production-ready augmentation pipeline for DeepRoof-2016.
-    Combines robust geometric transformations with realistic satellite noise modeling.
+    Production-ready augmentation pipeline for DeepRoof-2026.
+    Includes SOTA shadow synthesis and multi-scale priors.
     """
-    def __init__(self, prob=0.5):
+    def __init__(self, prob=0.5, use_shadow=True):
         pipeline = [
+            # 1. Multi-Scale Training Prior (Absolute Ideal)
+            # Randomly scale image from 0.5x to 1.5x to handle GSD variance
+            # Then crop/pad back to original size or whatever dataset expects.
+            # We assume internal caller handles final cropping if needed, 
+            # but RandomScale here adds the diversity.
+            A.RandomScale(scale_limit=0.5, p=0.7),
+            
             # Geometric Transforms: Must be tracked for vector rotation
             A.OneOf([
                 A.HorizontalFlip(p=1.0),
@@ -166,6 +202,12 @@ class GoogleMapsAugmentation(GeometricAugmentation):
                 A.Transpose(p=1.0),
             ], p=prob),
             
+            # Absolute Ideal Addition: Shadow Synthesis
+            ShadowAugmentation(shadow_intensity=0.3, p=0.4 if use_shadow else 0.0),
+
+            # Ensure image is at least 512x512 after scaling down
+            A.PadIfNeeded(min_height=512, min_width=512, border_mode=cv2.BORDER_CONSTANT, value=0, p=1.0),
+            
             # Photometric Transforms: No effect on vectors
             A.OneOf([
                 _gauss_noise_transform(p=1.0),
@@ -173,9 +215,6 @@ class GoogleMapsAugmentation(GeometricAugmentation):
                 A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
                 _image_compression_transform(p=1.0),
             ], p=0.3),
-
-            # Keep raw image scale here. Normalization is handled by
-            # SegDataPreProcessor in the model config to avoid double-normalization.
         ]
         super().__init__(pipeline)
 

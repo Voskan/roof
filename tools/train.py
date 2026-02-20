@@ -55,9 +55,12 @@ def main():
     
     # Import custom modules to ensure they are registered
     # (DeepRoofMask2Former, GeometryHead, DeepRoofLosses)
+    import deeproof.models.backbones.swin_v2_compat
     import deeproof.models.deeproof_model
+    import deeproof.models.heads.mask2former_head
     import deeproof.models.heads.geometry_head
     import deeproof.models.losses
+    import deeproof.datasets.roof_dataset
 
     # Load config
     cfg = Config.fromfile(args.config)
@@ -81,6 +84,12 @@ def main():
     # Resume training
     if args.resume:
         cfg.resume = True
+
+    # MMEngine compatibility: enforce loop config triads.
+    if cfg.get('val_dataloader') is not None and cfg.get('val_evaluator') is not None and cfg.get('val_cfg') is None:
+        cfg.val_cfg = dict(type='ValLoop')
+    if cfg.get('test_dataloader') is not None and cfg.get('test_evaluator') is not None and cfg.get('test_cfg') is None:
+        cfg.test_cfg = dict(type='TestLoop')
     
     # Checkpoint Configuration (Best IoU)
     # Ensure default_hooks.checkpoint exists and configure it

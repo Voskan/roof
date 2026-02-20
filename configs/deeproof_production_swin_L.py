@@ -266,6 +266,8 @@ param_scheduler = [
 
 # 4. Runtime Config
 train_cfg = dict(type='IterBasedTrainLoop', max_iters=100000, val_interval=5000)
+val_cfg = dict(type='ValLoop')
+test_cfg = dict(type='TestLoop')
 default_hooks = dict(
     checkpoint=dict(
         type='CheckpointHook',

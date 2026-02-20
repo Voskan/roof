@@ -72,12 +72,16 @@ class CrossEntropyLoss(nn.Module):
         self.use_sigmoid = use_sigmoid
         self.reduction = reduction
         self.loss_weight = loss_weight
+        if class_weight is not None and not torch.is_tensor(class_weight):
+            class_weight = torch.tensor(class_weight, dtype=torch.float32)
         self.class_weight = class_weight
         
         if self.use_sigmoid:
-            self.cls_criterion = nn.BCEWithLogitsLoss(reduction=reduction, pos_weight=class_weight)
+            self.cls_criterion = nn.BCEWithLogitsLoss(
+                reduction=reduction, pos_weight=self.class_weight)
         else:
-            self.cls_criterion = nn.CrossEntropyLoss(weight=class_weight, reduction=reduction)
+            self.cls_criterion = nn.CrossEntropyLoss(
+                weight=self.class_weight, reduction=reduction)
             
     def forward(self, cls_score, label, **kwargs):
         """

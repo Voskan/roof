@@ -1,4 +1,6 @@
-from typing import Any, List, Optional, Tuple
+import copy
+import inspect
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -30,7 +32,95 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
     uses exactly the same query-to-GT pairing.
     """
 
+    @staticmethod
+    def _runtime_expects_layer_cfg() -> bool:
+        """Detect whether installed mmdet/mmseg Mask2Former expects `layer_cfg`."""
+        try:
+            src = inspect.getsource(Mask2FormerHead.__init__)
+        except Exception:
+            # Conservative default for modern mmdet/mmseg stacks.
+            return True
+        return 'layer_cfg' in src
+
+    @staticmethod
+    def _to_plain_dict(cfg_like: Any) -> Optional[Dict[str, Any]]:
+        if cfg_like is None:
+            return None
+        if isinstance(cfg_like, dict):
+            return dict(cfg_like)
+        try:
+            return dict(cfg_like.items())
+        except Exception:
+            return None
+
+    @classmethod
+    def _upgrade_legacy_transformer_cfg(cls, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Upgrade legacy OpenMMLab transformer config keys to modern schema:
+        - transformerlayers -> layer_cfg
+        - attn_cfgs/ffn_cfgs -> self_attn_cfg/cross_attn_cfg/ffn_cfg
+        """
+        out = copy.deepcopy(kwargs)
+        decode_head_cfg = cls._to_plain_dict(out)
+        if decode_head_cfg is None:
+            return out
+
+        def _upgrade_encoder_layer_cfg(layer_cfg_like: Any) -> Dict[str, Any]:
+            layer_cfg = cls._to_plain_dict(layer_cfg_like) or {}
+            if 'attn_cfgs' in layer_cfg and 'self_attn_cfg' not in layer_cfg:
+                layer_cfg['self_attn_cfg'] = copy.deepcopy(layer_cfg.pop('attn_cfgs'))
+            if 'ffn_cfgs' in layer_cfg and 'ffn_cfg' not in layer_cfg:
+                layer_cfg['ffn_cfg'] = copy.deepcopy(layer_cfg.pop('ffn_cfgs'))
+            layer_cfg.pop('operation_order', None)
+            layer_cfg.pop('feedforward_channels', None)
+            return layer_cfg
+
+        def _upgrade_decoder_layer_cfg(layer_cfg_like: Any) -> Dict[str, Any]:
+            layer_cfg = cls._to_plain_dict(layer_cfg_like) or {}
+            attn_cfgs = layer_cfg.pop('attn_cfgs', None)
+            if attn_cfgs is not None:
+                if isinstance(attn_cfgs, (list, tuple)):
+                    if len(attn_cfgs) >= 1 and 'self_attn_cfg' not in layer_cfg:
+                        layer_cfg['self_attn_cfg'] = copy.deepcopy(attn_cfgs[0])
+                    if len(attn_cfgs) >= 2 and 'cross_attn_cfg' not in layer_cfg:
+                        layer_cfg['cross_attn_cfg'] = copy.deepcopy(attn_cfgs[1])
+                    elif len(attn_cfgs) == 1 and 'cross_attn_cfg' not in layer_cfg:
+                        layer_cfg['cross_attn_cfg'] = copy.deepcopy(attn_cfgs[0])
+                elif isinstance(attn_cfgs, dict):
+                    layer_cfg.setdefault('self_attn_cfg', copy.deepcopy(attn_cfgs))
+                    layer_cfg.setdefault('cross_attn_cfg', copy.deepcopy(attn_cfgs))
+            if 'ffn_cfgs' in layer_cfg and 'ffn_cfg' not in layer_cfg:
+                layer_cfg['ffn_cfg'] = copy.deepcopy(layer_cfg.pop('ffn_cfgs'))
+            layer_cfg.pop('operation_order', None)
+            layer_cfg.pop('feedforward_channels', None)
+            return layer_cfg
+
+        pixel_decoder = cls._to_plain_dict(decode_head_cfg.get('pixel_decoder'))
+        if pixel_decoder is not None:
+            encoder = cls._to_plain_dict(pixel_decoder.get('encoder'))
+            if encoder is not None:
+                if 'transformerlayers' in encoder and 'layer_cfg' not in encoder:
+                    encoder['layer_cfg'] = _upgrade_encoder_layer_cfg(encoder.pop('transformerlayers'))
+                elif 'layer_cfg' in encoder:
+                    encoder['layer_cfg'] = _upgrade_encoder_layer_cfg(encoder['layer_cfg'])
+                pixel_decoder['encoder'] = encoder
+            decode_head_cfg['pixel_decoder'] = pixel_decoder
+
+        transformer_decoder = cls._to_plain_dict(decode_head_cfg.get('transformer_decoder'))
+        if transformer_decoder is not None:
+            if 'transformerlayers' in transformer_decoder and 'layer_cfg' not in transformer_decoder:
+                transformer_decoder['layer_cfg'] = _upgrade_decoder_layer_cfg(
+                    transformer_decoder.pop('transformerlayers'))
+            elif 'layer_cfg' in transformer_decoder:
+                transformer_decoder['layer_cfg'] = _upgrade_decoder_layer_cfg(transformer_decoder['layer_cfg'])
+            decode_head_cfg['transformer_decoder'] = transformer_decoder
+
+        return decode_head_cfg
+
     def __init__(self, **kwargs):
+        # Compatibility shim for newer OpenMMLab stacks that expect `layer_cfg`.
+        if self._runtime_expects_layer_cfg():
+            kwargs = self._upgrade_legacy_transformer_cfg(kwargs)
         super().__init__(**kwargs)
         self.last_query_embeddings: Optional[torch.Tensor] = None
         self.last_cls_scores: Optional[Any] = None

@@ -27,7 +27,8 @@ optim_wrapper = dict(
     _delete_=True, # Overwrite production wrapper
     type='OptimWrapper',
     optimizer=optimizer,
-    clip_grad=dict(max_norm=0.01, norm_type=2)
+    # Keep gradient clipping consistent with production/scratch profiles.
+    clip_grad=dict(max_norm=1.0, norm_type=2)
 )
 
 # 3. Training Schedule Adjustment

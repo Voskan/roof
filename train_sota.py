@@ -35,6 +35,12 @@ cfg.data_root = str(project_root / 'data/OmniCity/')
 cfg.train_dataloader.dataset.data_root = cfg.data_root
 cfg.val_dataloader.dataset.data_root = cfg.data_root
 
+# MMEngine compatibility: enforce loop config triads.
+if cfg.get('val_dataloader') is not None and cfg.get('val_evaluator') is not None and cfg.get('val_cfg') is None:
+    cfg.val_cfg = dict(type='ValLoop')
+if cfg.get('test_dataloader') is not None and cfg.get('test_evaluator') is not None and cfg.get('test_cfg') is None:
+    cfg.test_cfg = dict(type='TestLoop')
+
 # 4. Checkpoint Loading
 # Start from the best available baseline to preserve learned features.
 # New query slots (300 total) will be initialized while preserving the first 100.

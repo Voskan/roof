@@ -134,12 +134,10 @@ class GeometricAugmentation(A.ReplayCompose):
             normals[..., 1] = nx
             
         elif t_name == 'RandomRotate90':
-            # Albumentations RandomRotate90: 'factor' is number of 90-degree
-            # CLOCKWISE rotations (factor=1 => 90 CW, factor=2 => 180, factor=3 => 270 CW).
-            # rotate_normals() takes CCW degrees, so negate the angle.
-            # CW 90 = CCW -90. Factor k => angle -90*k degrees CCW.
+            # Albumentations RandomRotate90 uses 90-degree CCW increments.
+            # rotate_normals() also expects CCW degrees, so apply +90*factor.
             factor = params.get('factor', 0)
-            rotate_normals(normals, -factor * 90)
+            rotate_normals(normals, factor * 90)
             
         elif t_name in ['Rotate', 'ShiftScaleRotate']:
             # Albumentations uses CCW degrees for these transforms

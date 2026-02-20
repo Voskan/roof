@@ -4,6 +4,38 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mmseg.registry import MODELS
 
+
+def _weight_reduce_loss(loss, weight=None, reduction='mean', avg_factor=None):
+    """Apply element/sample weighting then reduce loss."""
+    if weight is not None:
+        if not torch.is_tensor(weight):
+            weight = torch.tensor(weight, dtype=loss.dtype, device=loss.device)
+        weight = weight.to(device=loss.device, dtype=loss.dtype)
+        while weight.ndim < loss.ndim:
+            weight = weight.unsqueeze(-1)
+        loss = loss * weight
+
+    if reduction == 'none':
+        return loss
+
+    if avg_factor is None:
+        if reduction == 'mean':
+            return loss.mean()
+        if reduction == 'sum':
+            return loss.sum()
+        raise ValueError(f'Unsupported reduction={reduction}')
+
+    if torch.is_tensor(avg_factor):
+        avg_factor = float(avg_factor.detach().item())
+    avg_factor = max(float(avg_factor), 1e-12)
+
+    if reduction == 'mean':
+        return loss.sum() / avg_factor
+    if reduction == 'sum':
+        return loss.sum()
+    raise ValueError(f'Unsupported reduction={reduction}')
+
+
 @MODELS.register_module()
 class DeepRoofLosses(nn.Module):
     """
@@ -28,38 +60,36 @@ class DiceLoss(nn.Module):
     $$ L_{Dice} = 1 - \frac{2 \sum_{i} p_i g_i}{\sum_{i} p_i^2 + \sum_{i} g_i^2 + \epsilon} $$
     where $p_i$ is the prediction and $g_i$ is the ground truth.
     """
-    def __init__(self, eps=1e-6, reduction='mean', loss_weight=1.0):
+    def __init__(self, eps=1e-6, reduction='mean', loss_weight=1.0, use_sigmoid=True, **kwargs):
         super().__init__()
         self.eps = eps
         self.reduction = reduction
         self.loss_weight = loss_weight
+        self.use_sigmoid = use_sigmoid
         
-    def forward(self, pred, target, **kwargs):
+    def forward(self, pred, target, weight=None, avg_factor=None, reduction_override=None, **kwargs):
         """
         Args:
-            pred (Tensor): Predicted probabilities (N, C, H, W) or (N, H, W)
+            pred (Tensor): Predicted logits/probabilities.
             target (Tensor): Ground truth masks (N, H, W)
         """
-        if pred.ndim == 4 and target.ndim == 3:
-            # One-hot encode target if needed, or assume pred is binary mask
-            # For simplicity, assuming binary segmentation or specific class channel
-            pass
-            
-        # Flatten
+        reduction = reduction_override if reduction_override is not None else self.reduction
+        if reduction not in ('none', 'mean', 'sum'):
+            raise ValueError(f'Invalid reduction_override={reduction_override}')
+
+        if self.use_sigmoid:
+            pred = pred.sigmoid()
+
         pred = pred.reshape(pred.size(0), -1)
         target = target.reshape(target.size(0), -1).float()
-        
+
         intersection = (pred * target).sum(1)
         union = (pred**2).sum(1) + (target**2).sum(1)
-        
         dice_score = (2. * intersection) / (union + self.eps)
         loss = 1. - dice_score
-        
-        if self.reduction == 'mean':
-            loss = loss.mean()
-        elif self.reduction == 'sum':
-            loss = loss.sum()
-            
+
+        loss = _weight_reduce_loss(
+            loss, weight=weight, reduction=reduction, avg_factor=avg_factor)
         return loss * self.loss_weight
 
 @MODELS.register_module(name='DeepRoofCrossEntropyLoss')
@@ -75,21 +105,50 @@ class CrossEntropyLoss(nn.Module):
         if class_weight is not None and not torch.is_tensor(class_weight):
             class_weight = torch.tensor(class_weight, dtype=torch.float32)
         self.class_weight = class_weight
-        
-        if self.use_sigmoid:
-            self.cls_criterion = nn.BCEWithLogitsLoss(
-                reduction=reduction, pos_weight=self.class_weight)
-        else:
-            self.cls_criterion = nn.CrossEntropyLoss(
-                weight=self.class_weight, reduction=reduction)
             
-    def forward(self, cls_score, label, **kwargs):
+    def forward(self,
+                cls_score,
+                label,
+                weight=None,
+                avg_factor=None,
+                reduction_override=None,
+                ignore_index=-100,
+                **kwargs):
         """
         Args:
             cls_score (Tensor): The prediction.
             label (Tensor): The learning label of the prediction.
         """
-        loss = self.cls_criterion(cls_score, label)
+        reduction = reduction_override if reduction_override is not None else self.reduction
+        if reduction not in ('none', 'mean', 'sum'):
+            raise ValueError(f'Invalid reduction_override={reduction_override}')
+
+        class_weight = None
+        if self.class_weight is not None:
+            class_weight = self.class_weight.to(device=cls_score.device, dtype=cls_score.dtype)
+
+        if self.use_sigmoid:
+            if label.shape != cls_score.shape:
+                if label.ndim == cls_score.ndim - 1 and cls_score.size(-1) > 1:
+                    label = F.one_hot(label.long(), num_classes=cls_score.size(-1)).to(dtype=cls_score.dtype)
+                else:
+                    label = label.reshape_as(cls_score).to(dtype=cls_score.dtype)
+            else:
+                label = label.to(dtype=cls_score.dtype)
+            loss = F.binary_cross_entropy_with_logits(
+                cls_score, label, reduction='none', pos_weight=class_weight)
+            if loss.ndim > 1:
+                loss = loss.mean(dim=tuple(range(1, loss.ndim)))
+        else:
+            loss = F.cross_entropy(
+                cls_score,
+                label.long(),
+                weight=class_weight,
+                reduction='none',
+                ignore_index=ignore_index)
+
+        loss = _weight_reduce_loss(
+            loss, weight=weight, reduction=reduction, avg_factor=avg_factor)
         return loss * self.loss_weight
 
 @MODELS.register_module()

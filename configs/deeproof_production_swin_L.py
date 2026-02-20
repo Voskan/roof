@@ -222,7 +222,12 @@ optim_wrapper = dict(
     optimizer=optimizer,
     # FIX Bug #1 (production): max_norm=1.0 is the standard for Mask2Former.
     # 0.01 was 100x too aggressive — clipped geometry gradients to near-zero.
-    clip_grad=dict(max_norm=1.0, norm_type=2)
+    clip_grad=dict(max_norm=1.0, norm_type=2),
+    paramwise_cfg=dict(
+        custom_keys={
+            'backbone': dict(lr_mult=0.1, decay_mult=1.0)
+        }
+    )
 )
 
 param_scheduler = [

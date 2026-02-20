@@ -26,12 +26,12 @@ def get_slope(normal: Union[np.ndarray, torch.Tensor]) -> Union[float, np.ndarra
         # Pitch = arccos(nz)
         # Note: If normal points DOWN (nz < 0), slope > 90. 
         # Usually roof normals point UP. We take abs to be safe or assume valid data.
-        slope_rad = torch.arccos(nz)
+        slope_rad = torch.arccos(torch.abs(nz))
         slope_deg = torch.rad2deg(slope_rad)
     else:
         nz = normal[..., 2]
         nz = np.clip(nz, -1.0, 1.0)
-        slope_rad = np.arccos(nz)
+        slope_rad = np.arccos(np.abs(nz))
         slope_deg = np.degrees(slope_rad)
         
     return slope_deg

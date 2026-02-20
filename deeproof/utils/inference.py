@@ -164,17 +164,9 @@ def sliding_window_inference(model,
 
     print(f"Applying NMS on {len(all_pred_instances)} candidates...")
 
-    boxes = torch.tensor(
-        [inst['bbox'] for inst in all_pred_instances], dtype=torch.float32)
-    scores_tensor = torch.tensor(
-        [inst['score'] for inst in all_pred_instances], dtype=torch.float32)
-
-    # Use torchvision box NMS (fast, GPU-accelerated if available)
-    # For better results with segmentation, mask-IoU NMS (from post_processing.py)
-    # can be applied as a second pass.
-    keep_indices = nms(boxes, scores_tensor, iou_threshold=nms_iou_threshold)
-
-    final_instances = [all_pred_instances[i] for i in keep_indices.tolist()]
+    from deeproof.utils.post_processing import merge_tiles
+    # Swap Bounding-Box NMS for Mask-IoU NMS to prevent suppressing valid adjacent roofs
+    final_instances = merge_tiles(all_pred_instances, iou_threshold=nms_iou_threshold, method='score')
 
     print(f"After NMS: {len(final_instances)} instances kept")
     return {

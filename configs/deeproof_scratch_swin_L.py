@@ -31,7 +31,12 @@ optim_wrapper = dict(
     # FIX Bug #1: max_norm=0.01 was 100x too small — completely killed geometry gradients.
     # Standard Mask2Former / mmdet value is 1.0.
     # At 0.01 the effective LR for geometry was ~0.0000001, causing full class collapse.
-    clip_grad=dict(max_norm=1.0, norm_type=2)
+    clip_grad=dict(max_norm=1.0, norm_type=2),
+    paramwise_cfg=dict(
+        custom_keys={
+            'backbone': dict(lr_mult=0.1, decay_mult=1.0)
+        }
+    )
 )
 
 # 4. Long-Term Schedule (ITER BASED)

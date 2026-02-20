@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from mmengine.config import ConfigDict
 from mmseg.models.decode_heads import Mask2FormerHead
 from mmseg.registry import MODELS
 from mmseg.structures import SegDataSample
@@ -117,10 +118,25 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
 
         return decode_head_cfg
 
+    @staticmethod
+    def _to_config_dict_recursive(obj: Any) -> Any:
+        """Convert nested plain dict/list containers into ConfigDict recursively."""
+        if isinstance(obj, ConfigDict):
+            return obj
+        if isinstance(obj, dict):
+            return ConfigDict({k: DeepRoofMask2FormerHead._to_config_dict_recursive(v)
+                               for k, v in obj.items()})
+        if isinstance(obj, list):
+            return [DeepRoofMask2FormerHead._to_config_dict_recursive(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(DeepRoofMask2FormerHead._to_config_dict_recursive(v) for v in obj)
+        return obj
+
     def __init__(self, **kwargs):
         # Compatibility shim for OpenMMLab config schema differences.
         # Always normalize legacy keys; no-op on already-modern configs.
         kwargs = self._upgrade_legacy_transformer_cfg(kwargs)
+        kwargs = self._to_config_dict_recursive(kwargs)
         super().__init__(**kwargs)
         self.last_query_embeddings: Optional[torch.Tensor] = None
         self.last_cls_scores: Optional[Any] = None

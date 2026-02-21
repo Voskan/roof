@@ -255,7 +255,7 @@ val_dataloader = dict(
 )
 
 val_evaluator = [
-    dict(type='IoUMetric', iou_metrics=['mIoU']),
+    dict(type='IoUMetric', iou_metrics=['mIoU'], prefix=''),
     dict(type='DeepRoofBoundaryMetric', tolerance=1),
     dict(type='DeepRoofFacetMetric', overlap_threshold=0.30),
 ]

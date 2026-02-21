@@ -17,6 +17,7 @@ custom_imports = dict(
         'deeproof.models.heads.geometry_head',
         'deeproof.models.losses',
         'deeproof.evaluation.metrics',
+        'deeproof.hooks.progress_hook',
     ],
     allow_failed_imports=False)
 
@@ -308,6 +309,9 @@ param_scheduler = [
 train_cfg = dict(type='IterBasedTrainLoop', max_iters=100000, val_interval=5000)
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')
+custom_hooks = [
+    dict(type='DeepRoofProgressHook', interval=10, flush=True),
+]
 default_hooks = dict(
     logger=dict(
         type='LoggerHook',

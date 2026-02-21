@@ -166,6 +166,8 @@ def apply_tta(
     merge_iou: float = 0.6,
     max_instances: int = 0,
     allow_semantic_fallback: bool = False,
+    tta_mode: str = 'full',
+    use_amp: bool = True,
 ) -> dict:
     """
     Apply TTA and aggregate predictions by mask-level fusion.
@@ -181,24 +183,36 @@ def apply_tta(
     h, w, _ = image.shape
     img_tensor = torch.from_numpy(image).permute(2, 0, 1).float()
 
-    transforms = ['id', 'rot90', 'rot180', 'rot270', 'hflip']
-    batch_imgs = [
-        img_tensor,
-        torch.rot90(img_tensor, k=1, dims=[1, 2]),
-        torch.rot90(img_tensor, k=2, dims=[1, 2]),
-        torch.rot90(img_tensor, k=3, dims=[1, 2]),
-        torch.flip(img_tensor, dims=[2]),
-    ]
-    batch_stack = torch.stack(batch_imgs)
+    if tta_mode == 'none':
+        transforms = ['id']
+    elif tta_mode == 'lite':
+        transforms = ['id', 'hflip']
+    else:
+        transforms = ['id', 'rot90', 'rot180', 'rot270', 'hflip']
 
-    batch_samples = [
-        SegDataSample(metainfo=dict(img_shape=(h, w), ori_shape=(h, w), pad_shape=(h, w)))
-        for _ in transforms
-    ]
+    def _apply_transform(t: str, x: torch.Tensor) -> torch.Tensor:
+        if t == 'id':
+            return x
+        if t == 'rot90':
+            return torch.rot90(x, k=1, dims=[1, 2])
+        if t == 'rot180':
+            return torch.rot90(x, k=2, dims=[1, 2])
+        if t == 'rot270':
+            return torch.rot90(x, k=3, dims=[1, 2])
+        if t == 'hflip':
+            return torch.flip(x, dims=[2])
+        return x
 
-    with torch.no_grad():
-        batch_data = dict(inputs=[img for img in batch_stack], data_samples=batch_samples)
-        results = model.test_step(batch_data)
+    results = []
+    amp_enabled = bool(use_amp) and str(device).startswith('cuda')
+    for t in transforms:
+        t_img = _apply_transform(t, img_tensor)
+        sample = SegDataSample(metainfo=dict(img_shape=(h, w), ori_shape=(h, w), pad_shape=(h, w)))
+        with torch.no_grad():
+            with torch.cuda.amp.autocast(enabled=amp_enabled):
+                out = model.test_step(dict(inputs=[t_img], data_samples=[sample]))
+        if isinstance(out, list) and len(out) > 0:
+            results.append(out[0])
 
     all_pred_instances = []
 

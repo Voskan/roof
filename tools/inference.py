@@ -83,6 +83,24 @@ def parse_args():
     parser.add_argument('--tta_min_score', type=float, default=0.10, help='Min score inside TTA before merge')
     parser.add_argument('--tta_merge_iou', type=float, default=0.60, help='Mask IoU threshold for TTA fusion')
     parser.add_argument(
+        '--tta-mode',
+        choices=['full', 'lite', 'none'],
+        default='lite',
+        help='TTA policy. full=5 transforms, lite=identity+hflip, none=identity only.')
+    parser.add_argument(
+        '--disable-amp',
+        action='store_true',
+        help='Disable mixed precision during inference.')
+    parser.add_argument(
+        '--oom-retry-no-tta',
+        action='store_true',
+        default=True,
+        help='On CUDA OOM, retry the same tile once with tta_mode=none.')
+    parser.add_argument(
+        '--oom-fallback-cpu',
+        action='store_true',
+        help='On CUDA OOM, move model to CPU and continue inference.')
+    parser.add_argument(
         '--allow-semantic-fallback',
         action='store_true',
         help='Allow semantic-to-instance fallback when pred_instances are unavailable (off by default).')
@@ -473,32 +491,30 @@ def run_production_inference():
 
     all_raw_instances = []
     logger.info('Starting inference on %s tiles...', len(tiles))
+    cpu_fallback_active = False
+
+    def _run_tile_inference(tile_img: np.ndarray, tta_mode: str):
+        return apply_tta(
+            model=model,
+            image=tile_img,
+            device=args.device,
+            min_score=float(args.tta_min_score),
+            merge_iou=float(args.tta_merge_iou),
+            max_instances=int(args.max_instances),
+            allow_semantic_fallback=bool(args.allow_semantic_fallback),
+            tta_mode=str(tta_mode),
+            use_amp=not bool(args.disable_amp),
+        )
 
     for i in tqdm(range(len(tiles)), desc='DeepRoof-Inference'):
         tile = tiles[i]
         y_off, x_off = offsets[i]
         try:
-            result = apply_tta(
-                model=model,
-                image=tile,
-                device=args.device,
-                min_score=float(args.tta_min_score),
-                merge_iou=float(args.tta_merge_iou),
-                max_instances=int(args.max_instances),
-                allow_semantic_fallback=bool(args.allow_semantic_fallback),
-            )
+            result = _run_tile_inference(tile, tta_mode=str(args.tta_mode))
             instances = result.get('instances', [])
             if padded_sr is not None:
                 tile_sr = padded_sr[y_off:y_off + args.tile_size, x_off:x_off + args.tile_size, :]
-                sr_result = apply_tta(
-                    model=model,
-                    image=tile_sr,
-                    device=args.device,
-                    min_score=float(args.tta_min_score),
-                    merge_iou=float(args.tta_merge_iou),
-                    max_instances=int(args.max_instances),
-                    allow_semantic_fallback=bool(args.allow_semantic_fallback),
-                )
+                sr_result = _run_tile_inference(tile_sr, tta_mode=str(args.tta_mode))
                 sr_instances = sr_result.get('instances', [])
                 if sr_instances:
                     instances = merge_tiles(
@@ -515,6 +531,89 @@ def run_production_inference():
                         float(prepared['score']),
                         float(args.temperature))
                     all_raw_instances.append(prepared)
+        except RuntimeError as e:
+            err_msg = str(e).lower()
+            is_cuda_oom = ('out of memory' in err_msg) and str(args.device).startswith('cuda')
+            if not is_cuda_oom:
+                logger.warning(
+                    'Tile %s at offset (%s, %s) failed processing. Reason: %s',
+                    i,
+                    y_off,
+                    x_off,
+                    e)
+                continue
+            torch.cuda.empty_cache()
+            if not bool(args.oom_retry_no_tta) or str(args.tta_mode) == 'none':
+                logger.warning(
+                    'Tile %s at offset (%s, %s) failed processing (CUDA OOM) and cannot be retried.',
+                    i,
+                    y_off,
+                    x_off)
+                continue
+            logger.warning(
+                'Tile %s at offset (%s, %s) hit CUDA OOM; retrying with tta_mode=none.',
+                i,
+                y_off,
+                x_off)
+            try:
+                result = _run_tile_inference(tile, tta_mode='none')
+                instances = result.get('instances', [])
+                if padded_sr is not None:
+                    tile_sr = padded_sr[y_off:y_off + args.tile_size, x_off:x_off + args.tile_size, :]
+                    sr_result = _run_tile_inference(tile_sr, tta_mode='none')
+                    sr_instances = sr_result.get('instances', [])
+                    if sr_instances:
+                        instances = merge_tiles(
+                            instances + sr_instances,
+                            iou_threshold=float(args.tta_merge_iou),
+                            method=str(args.sr_fuse_mode),
+                        )
+                for inst in instances:
+                    if not _passes_quality_gate(inst, args):
+                        continue
+                    prepared = _prepare_instance_for_tile_merge(inst=inst, y_off=y_off, x_off=x_off)
+                    if prepared:
+                        prepared['score'] = calibrate_probability(
+                            float(prepared['score']),
+                            float(args.temperature))
+                        all_raw_instances.append(prepared)
+            except Exception as retry_e:
+                if bool(args.oom_fallback_cpu) and str(args.device).startswith('cuda') and not cpu_fallback_active:
+                    try:
+                        logger.warning('Switching inference to CPU after CUDA OOM...')
+                        model.to('cpu')
+                        args.device = 'cpu'
+                        cpu_fallback_active = True
+                        result = _run_tile_inference(tile, tta_mode='none')
+                        instances = result.get('instances', [])
+                        if padded_sr is not None:
+                            tile_sr = padded_sr[y_off:y_off + args.tile_size, x_off:x_off + args.tile_size, :]
+                            sr_result = _run_tile_inference(tile_sr, tta_mode='none')
+                            sr_instances = sr_result.get('instances', [])
+                            if sr_instances:
+                                instances = merge_tiles(
+                                    instances + sr_instances,
+                                    iou_threshold=float(args.tta_merge_iou),
+                                    method=str(args.sr_fuse_mode),
+                                )
+                        for inst in instances:
+                            if not _passes_quality_gate(inst, args):
+                                continue
+                            prepared = _prepare_instance_for_tile_merge(inst=inst, y_off=y_off, x_off=x_off)
+                            if prepared:
+                                prepared['score'] = calibrate_probability(
+                                    float(prepared['score']),
+                                    float(args.temperature))
+                                all_raw_instances.append(prepared)
+                        continue
+                    except Exception as cpu_e:
+                        logger.warning('CPU fallback failed for tile %s: %s', i, cpu_e)
+                logger.warning(
+                    'Tile %s at offset (%s, %s) failed after OOM retry. Reason: %s',
+                    i,
+                    y_off,
+                    x_off,
+                    retry_e)
         except Exception as e:
             logger.warning(
                 'Tile %s at offset (%s, %s) failed processing. Reason: %s',

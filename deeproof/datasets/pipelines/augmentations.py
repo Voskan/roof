@@ -45,6 +45,28 @@ def _downscale_transform(p=1.0):
         return A.Downscale(scale_range=(0.45, 0.75), p=p)
     return A.Downscale(scale_min=0.45, scale_max=0.75, interpolation=cv2.INTER_LINEAR, p=p)
 
+
+def _pad_if_needed_transform(min_height=512, min_width=512, p=1.0):
+    """Create a PadIfNeeded transform compatible with Albumentations v1/v2."""
+    params = inspect.signature(A.PadIfNeeded.__init__).parameters
+    kwargs = dict(
+        min_height=int(min_height),
+        min_width=int(min_width),
+        border_mode=cv2.BORDER_CONSTANT,
+        p=p,
+    )
+    if 'fill' in params:
+        # Albumentations 2.x API
+        kwargs['fill'] = 0
+        if 'fill_mask' in params:
+            kwargs['fill_mask'] = 0
+    else:
+        # Albumentations 1.x API
+        kwargs['value'] = 0
+        if 'mask_value' in params:
+            kwargs['mask_value'] = 0
+    return A.PadIfNeeded(**kwargs)
+
 def rotate_normals(normals, angle_degrees):
     """
     Apply a 2D rotation matrix to the (nx, ny) components of the normal map.
@@ -224,7 +246,7 @@ class GoogleMapsAugmentation(GeometricAugmentation):
             ShadowAugmentation(shadow_intensity=0.3, p=0.4 if use_shadow else 0.0),
 
             # Ensure image is at least 512x512 after scaling down
-            A.PadIfNeeded(min_height=512, min_width=512, border_mode=cv2.BORDER_CONSTANT, value=0, p=1.0),
+            _pad_if_needed_transform(min_height=512, min_width=512, p=1.0),
             
             # Photometric Transforms: No effect on vectors
             A.OneOf([

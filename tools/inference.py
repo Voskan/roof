@@ -108,6 +108,15 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=42, help='Global random seed')
     parser.add_argument('--deterministic', action='store_true', default=False, help='Deterministic CUDA mode')
     parser.add_argument('--save_viz', action='store_true', help='Save visualization overlay as PNG')
+    parser.add_argument(
+        '--viz-fill-alpha',
+        type=float,
+        default=0.0,
+        help='Polygon fill alpha for visualization (0.0 disables fill, contour-only).')
+    parser.add_argument(
+        '--keep-background',
+        action='store_true',
+        help='Keep class_id=0 instances (disabled by default for roof-facet output).')
     parser.add_argument('--save_metadata', action='store_true', help='Save metadata sidecar JSON')
     return parser.parse_args()
 
@@ -216,6 +225,8 @@ def _mask_density(mask: np.ndarray, bbox) -> float:
 def _passes_quality_gate(inst: dict, args) -> bool:
     score = calibrate_probability(float(inst['score']), float(args.temperature))
     label = int(inst['label'])
+    if label <= 0 and not bool(args.keep_background):
+        return False
     score_thr = _score_threshold_for_label(label, args)
     if score < score_thr:
         return False
@@ -272,19 +283,33 @@ def _prepare_instance_for_tile_merge(inst: dict, y_off: int, x_off: int) -> dict
     }
 
 
-def draw_visual_overlay(image: np.ndarray, polygons, output_path: str):
-    """Generate visualization overlay with robust polygon conversion."""
+def draw_visual_overlay(
+    image: np.ndarray,
+    polygons,
+    attributes,
+    output_path: str,
+    fill_alpha: float = 0.0,
+):
+    """Generate visualization overlay with contour-first rendering."""
     viz = image.copy()
     overlay = image.copy()
-    for poly in polygons:
+    fill_alpha = float(np.clip(fill_alpha, 0.0, 1.0))
+    colors = {
+        0: (120, 120, 120),   # background / unknown
+        1: (40, 180, 99),     # flat roof
+        2: (255, 159, 67),    # sloped roof
+    }
+    for i, poly in enumerate(polygons):
         poly_i32 = to_cv2_poly(poly, round_coords=True)
         if poly_i32 is None:
             continue
-        cv2.fillPoly(overlay, [poly_i32], (0, 255, 0))
-        cv2.polylines(viz, [poly_i32], True, (255, 255, 255), 1, cv2.LINE_AA)
-
-    alpha = 0.4
-    cv2.addWeighted(overlay, alpha, viz, 1 - alpha, 0, viz)
+        class_id = int(attributes[i].get('class_id', -1)) if i < len(attributes) else -1
+        color = colors.get(class_id, (255, 255, 255))
+        if fill_alpha > 0.0:
+            cv2.fillPoly(overlay, [poly_i32], color)
+        cv2.polylines(viz, [poly_i32], True, (255, 255, 255), 2, cv2.LINE_AA)
+    if fill_alpha > 0.0:
+        cv2.addWeighted(overlay, fill_alpha, viz, 1.0 - fill_alpha, 0, viz)
     cv2.imwrite(output_path, cv2.cvtColor(viz, cv2.COLOR_RGB2BGR))
     logger.info('Visual overlay exported to %s', output_path)
 
@@ -324,6 +349,21 @@ def _load_depth_map(path: str, target_hw=None):
         h, w = int(target_hw[0]), int(target_hw[1])
         depth = cv2.resize(depth, (w, h), interpolation=cv2.INTER_LINEAR)
     return depth
+
+
+def _sliding_positions(size: int, tile_size: int, stride: int) -> list:
+    """Generate tile start positions with guaranteed right/bottom coverage."""
+    size = int(size)
+    tile_size = int(tile_size)
+    stride = max(int(stride), 1)
+    if size <= tile_size:
+        return [0]
+    last = size - tile_size
+    pos = list(range(0, last + 1, stride))
+    if not pos or pos[-1] != last:
+        pos.append(last)
+    # Keep ordering stable and avoid accidental duplicates.
+    return list(dict.fromkeys(pos))
 
 
 def _predict_whole_edge_map(model, image_rgb: np.ndarray, device: str):
@@ -420,8 +460,10 @@ def run_production_inference():
 
     tiles = []
     offsets = []
-    for y in range(0, ph - args.tile_size + 1, args.stride):
-        for x in range(0, pw - args.tile_size + 1, args.stride):
+    y_positions = _sliding_positions(ph, args.tile_size, args.stride)
+    x_positions = _sliding_positions(pw, args.tile_size, args.stride)
+    for y in y_positions:
+        for x in x_positions:
             tiles.append(padded_img[y:y + args.tile_size, x:x + args.tile_size, :])
             offsets.append((y, x))
 
@@ -533,6 +575,8 @@ def run_production_inference():
     final_attributes = []
 
     for idx, inst in enumerate(merged_instances):
+        if int(inst.get('label', -1)) <= 0 and not bool(args.keep_background):
+            continue
         polys = regularize_building_polygons(
             inst['mask_crop'],
             epsilon_factor=0.015,
@@ -622,7 +666,13 @@ def run_production_inference():
 
     if args.save_viz:
         viz_out = str(Path(args.output).with_suffix('.png'))
-        draw_visual_overlay(image, final_polygons, viz_out)
+        draw_visual_overlay(
+            image=image,
+            polygons=final_polygons,
+            attributes=final_attributes,
+            output_path=viz_out,
+            fill_alpha=float(args.viz_fill_alpha),
+        )
 
     if args.save_metadata:
         _save_metadata(

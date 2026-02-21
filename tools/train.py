@@ -240,12 +240,14 @@ def _apply_safe_resume_fallback(cfg: Config, resume_requested: bool):
     required_prefixes = _required_state_prefixes_from_cfg(cfg)
     if _checkpoint_has_required_prefixes(last_ckpt, required_prefixes):
         return
-    # Incompatible architecture for full resume: load model weights only.
+    # Incompatible architecture for full resume: skip checkpoint loading.
+    # This avoids partial loads where new heads start randomly while older
+    # branches are loaded from a different training phase.
     cfg.resume = False
-    cfg.load_from = str(last_ckpt)
+    cfg.load_from = None
     print(
         f'[safe-resume] Incompatible last checkpoint: {last_ckpt}. '
-        'Switched to weights-only load_from to avoid optimizer param-group mismatch.'
+        'Skipped checkpoint loading to avoid optimizer/architecture mismatch.'
     )
 
 

@@ -250,46 +250,75 @@ def snap_to_dominant_orientation(pts: np.ndarray) -> np.ndarray:
     return pts_final
 
 def regularize_building_polygons(mask: np.ndarray,
-                                 epsilon_factor: float = 0.04,
+                                 epsilon_factor: float = 0.02,
                                  ortho_threshold: float = 10.0,
-                                 min_area: int = 100) -> List[np.ndarray]:
+                                 min_area: int = 100,
+                                 enforce_ortho: bool = False) -> List[np.ndarray]:
     """
-    Convert a binary mask to regularized building polygons.
+    Convert a binary mask to stable building polygons.
 
-    Pipeline:
-    1. Morphological smoothing (close small holes, blur pixelated edges)
-    2. Find external contours
-    3. RDP simplification (cv2.approxPolyDP)
-    4. Dominant Orientation Snapping (Global Parallelism)
-    5. Orthogonality enforcement (Local 90-deg snapping)
+    Notes:
+    - By default, we DO NOT apply aggressive orthogonal snapping because it can
+      create self-intersections and out-of-bounds coordinates on complex roofs.
+    - Coordinates are clipped to mask bounds to keep GeoJSON valid.
     """
     binary = (mask > 0).astype(np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN,  kernel, iterations=1)
+    if binary.ndim == 3:
+        binary = binary[..., 0]
+
+    h, w = binary.shape[:2]
+    if h == 0 or w == 0:
+        return []
+
+    # Mild smoothing to reduce staircase artifacts, but keep geometry intact.
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
 
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    polygons = []
+    polygons: List[np.ndarray] = []
     for cnt in contours:
-        if cv2.contourArea(cnt) < min_area:
+        if cnt is None or len(cnt) < 3:
+            continue
+        if cv2.contourArea(cnt) < float(min_area):
             continue
 
-        epsilon = epsilon_factor * cv2.arcLength(cnt, True)
+        perim = cv2.arcLength(cnt, True)
+        if perim <= 0:
+            continue
+        epsilon = max(1.0, float(epsilon_factor) * float(perim))
         approx = cv2.approxPolyDP(cnt, epsilon, True)
-
-        if len(approx) < 3:
+        if approx is None or len(approx) < 3:
             continue
 
         pts = approx.reshape(-1, 2).astype(np.float32)
-        
-        # 4. Global Dominant Orientation Snapping
-        pts = snap_to_dominant_orientation(pts)
-        
-        # 5. Local Orthogonality (cleanup)
-        regularized = enforce_orthogonality(pts, ortho_threshold)
-        regularized = enforce_orthogonality(regularized, ortho_threshold)
 
-        polygons.append(regularized)
+        # Optionally apply orthogonal regularization for strict CAD-like output.
+        if enforce_ortho:
+            pts = snap_to_dominant_orientation(pts)
+            pts = enforce_orthogonality(pts, ortho_threshold).reshape(-1, 2).astype(np.float32)
+            pts = enforce_orthogonality(pts, ortho_threshold).reshape(-1, 2).astype(np.float32)
+
+        # Remove consecutive duplicate vertices.
+        if len(pts) >= 2:
+            dedup = [pts[0]]
+            for p in pts[1:]:
+                if np.linalg.norm(p - dedup[-1]) > 1e-3:
+                    dedup.append(p)
+            pts = np.asarray(dedup, dtype=np.float32)
+
+        if pts.shape[0] < 3:
+            continue
+
+        # Keep polygon inside image bounds.
+        pts[:, 0] = np.clip(pts[:, 0], 0.0, float(w - 1))
+        pts[:, 1] = np.clip(pts[:, 1], 0.0, float(h - 1))
+
+        poly = np.ascontiguousarray(pts.reshape(-1, 1, 2).astype(np.float32))
+        area = float(cv2.contourArea(poly))
+        if area < float(min_area):
+            continue
+        polygons.append(poly)
 
     return polygons

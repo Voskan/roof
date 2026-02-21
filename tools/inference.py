@@ -188,7 +188,12 @@ def run_production_inference():
     
     for idx, inst in enumerate(merged_instances):
         # Local mask -> Polygons (Regularized)
-        polys = regularize_building_polygons(inst['mask_crop'])
+        polys = regularize_building_polygons(
+            inst['mask_crop'],
+            epsilon_factor=0.015,
+            min_area=100,
+            enforce_ortho=False,
+        )
         y_off, x_off = inst['offset']
         
         for p in polys:

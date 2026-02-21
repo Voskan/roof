@@ -192,6 +192,7 @@ train_pipeline = []
 train_dataloader = dict(
     batch_size=4, # Samples per GPU (4 GPUs = Total Batch Size 16)
     num_workers=8,
+    timeout=300,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
@@ -240,6 +241,7 @@ tta_model = dict(type='SegTTAModel')
 val_dataloader = dict(
     batch_size=1,
     num_workers=4,
+    timeout=300,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
@@ -310,7 +312,7 @@ train_cfg = dict(type='IterBasedTrainLoop', max_iters=100000, val_interval=5000)
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')
 custom_hooks = [
-    dict(type='DeepRoofProgressHook', interval=10, heartbeat_sec=20, flush=True),
+    dict(type='DeepRoofProgressHook', interval=10, heartbeat_sec=20, dataloader_warn_sec=90, flush=True),
 ]
 default_hooks = dict(
     logger=dict(

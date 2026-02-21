@@ -16,15 +16,18 @@ class DeepRoofProgressHook(Hook):
         interval: int = 10,
         flush: bool = True,
         heartbeat_sec: int = 30,
+        dataloader_warn_sec: int = 90,
     ):
         self.interval = max(int(interval), 1)
         self.flush = bool(flush)
         self.heartbeat_sec = max(int(heartbeat_sec), 5)
+        self.dataloader_warn_sec = max(int(dataloader_warn_sec), 30)
         self._start_time = None
         self._stop_event = threading.Event()
         self._heartbeat_thread = None
         self._runner = None
         self._last_iter_seen = -1
+        self._dataloader_warned = False
 
     @staticmethod
     def _max_iters(runner) -> int:
@@ -71,6 +74,13 @@ class DeepRoofProgressHook(Hook):
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
                     f'elapsed={elapsed:.1f}s | waiting_next_batch=1'
                 )
+                if (not self._dataloader_warned) and cur == 0 and elapsed >= float(self.dataloader_warn_sec):
+                    self._emit(
+                        '[DeepRoofProgress] WARNING: first batch is still not ready. '
+                        'Likely dataloader stall (workers/path/augmentation). '
+                        'Try num_workers=0 and persistent_workers=False for notebook runs.'
+                    )
+                    self._dataloader_warned = True
             else:
                 self._emit(
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
@@ -94,6 +104,7 @@ class DeepRoofProgressHook(Hook):
             f'[DeepRoofProgress] logger_interval={self.interval} | heartbeat_sec={self.heartbeat_sec} | '
             f'lr={self._format_lr(runner)}'
         )
+        self._dataloader_warned = False
 
     def after_train_iter(self, runner, batch_idx: int, data_batch=None, outputs=None):
         cur_iter = int(batch_idx) + 1

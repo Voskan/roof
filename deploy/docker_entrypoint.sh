@@ -29,7 +29,15 @@ else
     exit 1
 fi
 
-# 3. Startup API Server
+# 3. Runtime smoke check
+echo "[Entrypoint] Running runtime smoke checks..."
+python tools/smoke_check.py
+if [ $? -ne 0 ]; then
+    echo "[Entrypoint] CRITICAL: Smoke checks failed. Aborting startup."
+    exit 1
+fi
+
+# 4. Startup API Server
 # Note: Using production config and converted weights
 echo "[Entrypoint] Starting DeepRoof-2026 Production API Server..."
 # Assuming a production-ready server startup command

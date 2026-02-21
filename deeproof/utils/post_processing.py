@@ -1,188 +1,193 @@
+from typing import Dict, List, Tuple
 
 import numpy as np
-import torch
-from typing import List, Dict, Union
+
 
 def calculate_mask_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
-    """
-    Calculate Intersection over Union (IoU) between two binary masks.
-    """
-    # Overlap area
     intersection = np.logical_and(mask1, mask2).sum()
     if intersection == 0:
         return 0.0
-        
     union = np.logical_or(mask1, mask2).sum()
     if union == 0:
         return 0.0
-        
     return float(intersection) / float(union)
 
-def merge_tiles(instances: List[Dict], 
-                iou_threshold: float = 0.5, 
-                method: str = 'score') -> List[Dict]:
+
+def _instance_bbox(instance: Dict) -> Tuple[int, int, int, int]:
+    x1, y1, x2, y2 = instance['bbox']
+    return int(x1), int(y1), int(x2), int(y2)
+
+
+def _to_global_canvas(instance: Dict, min_x: int, min_y: int, max_x: int, max_y: int) -> np.ndarray:
+    h = int(max_y - min_y)
+    w = int(max_x - min_x)
+    canvas = np.zeros((h, w), dtype=bool)
+
+    if 'mask_crop' in instance and instance.get('mask_crop') is not None:
+        y_off, x_off = instance['offset']
+        mask = np.asarray(instance['mask_crop'], dtype=bool)
+        m_h, m_w = mask.shape[:2]
+        y0 = int(y_off - min_y)
+        x0 = int(x_off - min_x)
+
+        y1 = max(0, y0)
+        x1 = max(0, x0)
+        y2 = min(h, y0 + m_h)
+        x2 = min(w, x0 + m_w)
+        if y2 <= y1 or x2 <= x1:
+            return canvas
+        crop_y1 = y1 - y0
+        crop_x1 = x1 - x0
+        crop_y2 = crop_y1 + (y2 - y1)
+        crop_x2 = crop_x1 + (x2 - x1)
+        canvas[y1:y2, x1:x2] = mask[crop_y1:crop_y2, crop_x1:crop_x2]
+        return canvas
+
+    if 'mask' in instance and instance.get('mask') is not None:
+        mask = np.asarray(instance['mask'], dtype=bool)
+        x1, y1, x2, y2 = _instance_bbox(instance)
+        off_x = int(x1 - min_x)
+        off_y = int(y1 - min_y)
+        m_h, m_w = mask.shape[:2]
+        yy2 = min(h, off_y + m_h)
+        xx2 = min(w, off_x + m_w)
+        if yy2 <= off_y or xx2 <= off_x:
+            return canvas
+        canvas[max(off_y, 0):yy2, max(off_x, 0):xx2] = mask[:yy2 - max(off_y, 0), :xx2 - max(off_x, 0)]
+    return canvas
+
+
+def _pairwise_iou(inst_a: Dict, inst_b: Dict) -> float:
+    ax1, ay1, ax2, ay2 = _instance_bbox(inst_a)
+    bx1, by1, bx2, by2 = _instance_bbox(inst_b)
+    if ax2 <= bx1 or bx2 <= ax1 or ay2 <= by1 or by2 <= ay1:
+        return 0.0
+
+    min_x = min(ax1, bx1)
+    min_y = min(ay1, by1)
+    max_x = max(ax2, bx2)
+    max_y = max(ay2, by2)
+    canvas_a = _to_global_canvas(inst_a, min_x, min_y, max_x, max_y)
+    canvas_b = _to_global_canvas(inst_b, min_x, min_y, max_x, max_y)
+    return calculate_mask_iou(canvas_a, canvas_b)
+
+
+def _cluster_by_iou(instances: List[Dict], iou_threshold: float) -> List[List[int]]:
+    n = len(instances)
+    neighbors = [[] for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _pairwise_iou(instances[i], instances[j]) > iou_threshold:
+                neighbors[i].append(j)
+                neighbors[j].append(i)
+
+    visited = [False] * n
+    components: List[List[int]] = []
+    for i in range(n):
+        if visited[i]:
+            continue
+        stack = [i]
+        visited[i] = True
+        comp = []
+        while stack:
+            node = stack.pop()
+            comp.append(node)
+            for nb in neighbors[node]:
+                if not visited[nb]:
+                    visited[nb] = True
+                    stack.append(nb)
+        components.append(comp)
+    return components
+
+
+def _merge_component(component: List[Dict], method: str) -> Dict:
+    if len(component) == 1 or method == 'score':
+        return max(component, key=lambda x: float(x.get('score', 0.0)))
+
+    x1 = min(int(inst['bbox'][0]) for inst in component)
+    y1 = min(int(inst['bbox'][1]) for inst in component)
+    x2 = max(int(inst['bbox'][2]) for inst in component)
+    y2 = max(int(inst['bbox'][3]) for inst in component)
+    h, w = int(y2 - y1), int(x2 - x1)
+
+    masks = []
+    scores = []
+    for inst in component:
+        masks.append(_to_global_canvas(inst, x1, y1, x2, y2).astype(np.float32))
+        scores.append(max(float(inst.get('score', 0.0)), 1e-6))
+    scores_np = np.asarray(scores, dtype=np.float32)
+
+    if method == 'union':
+        merged_mask = np.logical_or.reduce([m > 0.5 for m in masks])
+    else:  # method == 'weighted'
+        weighted_prob = np.zeros((h, w), dtype=np.float32)
+        for score, mask in zip(scores_np, masks):
+            weighted_prob += score * mask
+        weighted_prob /= float(scores_np.sum())
+        merged_mask = weighted_prob >= 0.5
+
+    rows = np.any(merged_mask, axis=1)
+    cols = np.any(merged_mask, axis=0)
+    if not np.any(rows) or not np.any(cols):
+        return max(component, key=lambda x: float(x.get('score', 0.0)))
+
+    ymin, ymax = np.where(rows)[0][[0, -1]]
+    xmin, xmax = np.where(cols)[0][[0, -1]]
+    crop = merged_mask[ymin:ymax + 1, xmin:xmax + 1]
+
+    out = {
+        'bbox': [x1 + int(xmin), y1 + int(ymin), x1 + int(xmax + 1), y1 + int(ymax + 1)],
+        'mask_crop': crop.astype(bool),
+        'offset': (y1 + int(ymin), x1 + int(xmin)),
+        'score': float(scores_np.max()),
+        'label': int(component[0]['label']),
+    }
+
+    normals = [inst.get('normal') for inst in component if inst.get('normal') is not None]
+    if normals:
+        normal_weights = np.asarray(
+            [max(float(inst.get('score', 0.0)), 1e-6) for inst in component if inst.get('normal') is not None],
+            dtype=np.float32)
+        fused = np.zeros((3,), dtype=np.float32)
+        for w_i, n_i in zip(normal_weights, normals):
+            fused += w_i * np.asarray(n_i, dtype=np.float32)
+        norm = float(np.linalg.norm(fused))
+        if norm > 1e-8:
+            fused /= norm
+        out['normal'] = fused.astype(np.float32)
+
+    return out
+
+
+def merge_tiles(
+    instances: List[Dict],
+    iou_threshold: float = 0.5,
+    method: str = 'score',
+) -> List[Dict]:
     """
-    Merge overlapping instances from different tiles.
-    
-    Args:
-        instances (List[Dict]): List of instance dicts containing:
-            - 'mask': Binary mask (np.ndarray) in GLOBAL coordinates (or sparse representation)
-                      Note: Masks here are effectively RLE or cropped masks with offsets.
-                      For IOU calculation, we need to place them in a common canvas or check bbox intersection first.
-                      If masks are full-size images, it's memory heavy.
-                      Ideally, inputs are bbox + cropped mask + offset.
-            - 'bbox': [x1, y1, x2, y2]
-            - 'score': Confidence score
-            - 'label': Class label
-            - 'normal': (Optional) Normal vector
-        iou_threshold (float): IoU threshold to consider instances as the same object.
-        method (str): Merge strategy. 'score' (keep best), 'union' (merge masks).
-        
-    Returns:
-        List[Dict]: Filtered/Merged instances.
+    Merge overlapping tile instances with class-aware mask IoU graph clustering.
+
+    method:
+    - score: keep best-scoring instance per cluster
+    - union: union masks inside cluster
+    - weighted: score-weighted mask vote inside cluster
     """
     if not instances:
         return []
-        
-    # Sort by score descending
-    sorted_instances = sorted(instances, key=lambda x: x['score'], reverse=True)
-    
-    keep = []
-    
-    # Simple NMS-like loop
-    while len(sorted_instances) > 0:
-        # Pick the highest score instance
-        current = sorted_instances.pop(0)
-        keep.append(current)
-        
-        # Compare with remaining
-        remaining = []
-        for other in sorted_instances:
-            # 1. Check BBox Intersection first (fast filter)
-            # x1, y1, x2, y2
-            b1 = current['bbox']
-            b2 = other['bbox']
-            
-            # Intersection box
-            inter_x1 = max(b1[0], b2[0])
-            inter_y1 = max(b1[1], b2[1])
-            inter_x2 = min(b1[2], b2[2])
-            inter_y2 = min(b1[3], b2[3])
-            
-            if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
-                # No overlap
-                remaining.append(other)
-                continue
-                
-            # 2. Compute Mask IoU on the union BBox or intersection BBox?
-            # We need to construct the masks in a shared coordinate system.
-            # Minimal BBox covering both
-            min_x = min(b1[0], b2[0])
-            min_y = min(b1[1], b2[1])
-            max_x = max(b1[2], b2[2])
-            max_y = max(b1[3], b2[3])
-            
-            w = max_x - min_x
-            h = max_y - min_y
-            
-            # Canvas
-            canvas_curr = np.zeros((h, w), dtype=bool)
-            canvas_other = np.zeros((h, w), dtype=bool)
-            
-            # Place current mask
-            # Adjust offsets
-            # current['mask'] might be a crop or full mask.
-            # Assuming 'mask_crop' and 'offset' from previous step inference.py
-            # If input is raw full mask, adjust logic.
-            # Let's assume input format from inference.py: 'mask_crop', 'offset' (y,x)
-            
-            if 'mask_crop' in current:
-                y_off, x_off = current['offset']
-                cy = y_off - min_y
-                cx = x_off - min_x
-                cm_h, cm_w = current['mask_crop'].shape
-                # Clamp to canvas bounds (symmetric: same safety as 'other' path below)
-                y1_c = max(0, cy)
-                x1_c = max(0, cx)
-                y2_c = min(h, cy + cm_h)
-                x2_c = min(w, cx + cm_w)
-                cr_y1 = y1_c - cy
-                cr_x1 = x1_c - cx
-                cr_y2 = cr_y1 + (y2_c - y1_c)
-                cr_x2 = cr_x1 + (x2_c - x1_c)
-                canvas_curr[y1_c:y2_c, x1_c:x2_c] = current['mask_crop'][cr_y1:cr_y2, cr_x1:cr_x2]
-            elif 'mask' in current and current['mask'] is not None:
-                # Full-size mask: place at bbox offset relative to canvas origin
-                b1 = current['bbox']
-                c_y1 = int(b1[1]) - min_y
-                c_x1 = int(b1[0]) - min_x
-                # The mask may be full image size or cropped to bbox — handle both
-                m = current['mask']
-                mh, mw = m.shape[:2]
-                c_y2 = min(h, c_y1 + mh)
-                c_x2 = min(w, c_x1 + mw)
-                if c_y2 > c_y1 and c_x2 > c_x1:
-                    canvas_curr[max(0, c_y1):c_y2, max(0, c_x1):c_x2] = \
-                        m[:c_y2 - max(0, c_y1), :c_x2 - max(0, c_x1)]
-            
-            if 'mask_crop' in other:
-                y_off, x_off = other['offset']
-                cy = y_off - min_y
-                cx = x_off - min_x
-                cm_h, cm_w = other['mask_crop'].shape
-                
-                # Careful with bounds if something is wrong, but bbox checks should handle it
-                # Ensure we don't go out of bounds (just in case)
-                y1 = max(0, cy)
-                x1 = max(0, cx)
-                y2 = min(h, cy+cm_h)
-                x2 = min(w, cx+cm_w)
-                
-                # Check overlapping region in mask_crop
-                crop_y1 = y1 - cy
-                crop_x1 = x1 - cx
-                crop_y2 = crop_y1 + (y2 - y1)
-                crop_x2 = crop_x1 + (x2 - x1)
-                
-                canvas_other[y1:y2, x1:x2] = other['mask_crop'][crop_y1:crop_y2, crop_x1:crop_x2]
-            
-            iou = calculate_mask_iou(canvas_curr, canvas_other)
-            
-            if iou > iou_threshold:
-                # Merge or Suppress
-                if method == 'union':
-                    # Union mask into 'current'
-                    # We need to update current's bbox, mask, etc.
-                    # This is complex because 'current' is already in 'keep'.
-                    # Updating it requires re-extracting crop etc.
-                    
-                    # Implementation of Union Merge:
-                    # 1. Update global bbox
-                    new_bbox = [min_x, min_y, max_x, max_y]
-                    current['bbox'] = new_bbox
-                    
-                    # 2. Union Mask
-                    # Union on canvas
-                    union_mask = np.logical_or(canvas_curr, canvas_other)
-                    current['mask_crop'] = union_mask # Now full canvas crop
-                    current['offset'] = (min_y, min_x)
-                    
-                    # 3. Update Score? Max or Mean?
-                    # Usually keep max score of the "seed".
-                    # current['score'] = max(current['score'], other['score'])
-                    pass
-                elif method == 'score':
-                    # Suppress 'other' (implicitly done by not adding to remaining)
-                    # Edge case: Roof cut in half.
-                    # 'current' (higher score) is the "full" roof from Tile A. 
-                    # 'other' (lower score) is the "half" roof from Tile B.
-                    # Overlap might be > 0.5 if half roof is mostly inside full roof.
-                    # If overlap is high, we assume 'current' covers 'other'.
-                    # So we drop 'other'.
-                    pass
-            else:
-                remaining.append(other)
-                
-        sorted_instances = remaining
-        
-    return keep
+    if method not in {'score', 'union', 'weighted'}:
+        raise ValueError(f'Unsupported merge method: {method}')
+
+    by_label: Dict[int, List[Dict]] = {}
+    for inst in instances:
+        label = int(inst.get('label', -1))
+        by_label.setdefault(label, []).append(inst)
+
+    merged_all: List[Dict] = []
+    for _, label_instances in by_label.items():
+        components = _cluster_by_iou(label_instances, iou_threshold=float(iou_threshold))
+        for comp in components:
+            comp_instances = [label_instances[i] for i in comp]
+            merged_all.append(_merge_component(comp_instances, method=method))
+
+    merged_all.sort(key=lambda x: float(x.get('score', 0.0)), reverse=True)
+    return merged_all

@@ -188,6 +188,36 @@ def test_augmentation_consistency():
     import shutil
     shutil.rmtree(data_root, ignore_errors=True)
 
+
+def test_load_data_list_hard_example_oversampling():
+    data_root = tempfile.mkdtemp(prefix='deeproof_test_hard_')
+    os.makedirs(f'{data_root}/images', exist_ok=True)
+    os.makedirs(f'{data_root}/masks', exist_ok=True)
+    os.makedirs(f'{data_root}/normals', exist_ok=True)
+
+    with open(f'{data_root}/train.txt', 'w') as f:
+        f.write('a\n')
+        f.write('b\n')
+
+    with open(f'{data_root}/hard_examples.txt', 'w') as f:
+        f.write('b\n')
+
+    dataset = object.__new__(DeepRoofDataset)
+    dataset.ann_file = f'{data_root}/train.txt'
+    dataset.data_root = data_root
+    dataset.img_suffix = '.jpg'
+    dataset.seg_map_suffix = '.png'
+    dataset.normal_suffix = '.npy'
+    dataset.hard_examples_file = f'{data_root}/hard_examples.txt'
+    dataset.hard_example_repeat = 3
+
+    data_list = DeepRoofDataset.load_data_list(dataset)
+    ids = [d['img_id'] for d in data_list]
+    assert ids.count('a') == 1
+    assert ids.count('b') == 3
+
+    import shutil
+    shutil.rmtree(data_root, ignore_errors=True)
+
 if __name__ == "__main__":
     test_augmentation_consistency()
-

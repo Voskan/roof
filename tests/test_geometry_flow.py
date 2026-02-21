@@ -68,6 +68,8 @@ class MockAssignResult:
 
 def test_geometry_flow():
     print("Initializing Geometry Flow Test (FIXED INIT ENV)...")
+    torch.manual_seed(0)
+    np.random.seed(0)
     
     geometry_cfg = dict(type='GeometryHead', embed_dims=256, num_layers=3, hidden_dims=256)
     model = DeepRoofMask2Former(geometry_head=geometry_cfg, geometry_loss_weight=10.0)

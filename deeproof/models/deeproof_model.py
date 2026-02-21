@@ -48,6 +48,16 @@ class DeepRoofMask2Former(Mask2FormerBase):
                  geometry_head: dict,
                  geometry_loss: Optional[dict] = None,
                  geometry_loss_weight: float = 2.0,
+                 topology_loss_weight: float = 0.0,
+                 dense_geometry_head: Optional[dict] = None,
+                 dense_normal_loss: Optional[dict] = None,
+                 dense_geometry_loss_weight: float = 0.0,
+                 piecewise_planar_loss_weight: float = 0.0,
+                 edge_head: Optional[dict] = None,
+                 edge_loss: Optional[dict] = None,
+                 edge_loss_weight: float = 0.0,
+                 sam_distill_loss: Optional[dict] = None,
+                 sam_distill_weight: float = 0.0,
                  **kwargs):
         super().__init__(**kwargs)
         self.test_cfg = self._normalize_test_cfg(getattr(self, 'test_cfg', None))
@@ -62,6 +72,38 @@ class DeepRoofMask2Former(Mask2FormerBase):
         else:
              self.geometry_loss = CosineSimilarityLoss(loss_weight=geometry_loss_weight)
              self.geometry_loss_weight = geometry_loss_weight
+        self.topology_loss_weight = float(topology_loss_weight)
+
+        self.dense_geometry_head = MODELS.build(dense_geometry_head) if dense_geometry_head is not None else None
+        if self.dense_geometry_head is not None:
+            if dense_normal_loss is not None:
+                self.dense_normal_loss = MODELS.build(dense_normal_loss)
+            else:
+                self.dense_normal_loss = MODELS.build(
+                    dict(type='DeepRoofDenseNormalLoss', angular_weight=1.0, l1_weight=0.5, loss_weight=1.0))
+        else:
+            self.dense_normal_loss = None
+        self.dense_geometry_loss_weight = float(dense_geometry_loss_weight)
+        self.piecewise_planar_loss_weight = float(piecewise_planar_loss_weight)
+
+        self.edge_head = MODELS.build(edge_head) if edge_head is not None else None
+        if self.edge_head is not None:
+            if edge_loss is not None:
+                self.edge_loss = MODELS.build(edge_loss)
+            else:
+                self.edge_loss = nn.BCEWithLogitsLoss(reduction='mean')
+        else:
+            self.edge_loss = None
+        self.edge_loss_weight = float(edge_loss_weight)
+
+        if sam_distill_weight > 0.0:
+            if sam_distill_loss is not None:
+                self.sam_distill_loss = MODELS.build(sam_distill_loss)
+            else:
+                self.sam_distill_loss = MODELS.build(dict(type='DeepRoofSAMDistillLoss', loss_weight=1.0))
+        else:
+            self.sam_distill_loss = None
+        self.sam_distill_weight = float(sam_distill_weight)
 
     @staticmethod
     def _normalize_test_cfg(test_cfg):
@@ -314,6 +356,14 @@ class DeepRoofMask2Former(Mask2FormerBase):
             gt_instances = data_samples[i].gt_instances
             img_meta = data_samples[i].metainfo
 
+            valid_normal = 1.0
+            if isinstance(img_meta, dict):
+                valid_normal = float(img_meta.get('valid_normal', 1.0))
+            else:
+                valid_normal = float(getattr(img_meta, 'valid_normal', 1.0))
+            if valid_normal <= 0.0:
+                continue
+
             if len(gt_instances) == 0:
                 continue
 
@@ -405,6 +455,339 @@ class DeepRoofMask2Former(Mask2FormerBase):
         # Zero loss that preserves gradients
         return geo_preds.sum() * 0.0
 
+    def _compute_topology_regularization(
+        self,
+        all_mask_preds: List[torch.Tensor],
+        data_samples: List[SegDataSample],
+        device: torch.device,
+    ) -> torch.Tensor:
+        """
+        Topology-aware regularization for matched foreground queries.
+
+        Penalizes:
+        - tiny unstable components
+        - hole-like artifacts
+        - excessive fragmentation (open/close inconsistency)
+        """
+        if self.topology_loss_weight <= 0.0:
+            return all_mask_preds[-1].sum() * 0.0
+
+        cached_assigns = getattr(self.decode_head, 'last_assign_results', None)
+        total_loss = all_mask_preds[-1].sum() * 0.0
+        num_terms = 0
+
+        for i in range(len(data_samples)):
+            gt_instances = data_samples[i].gt_instances
+            if len(gt_instances) == 0:
+                continue
+
+            assign_result = None
+            if cached_assigns is not None and i < len(cached_assigns):
+                assign_result = cached_assigns[i]
+            if assign_result is None:
+                continue
+
+            pos_inds = torch.nonzero(assign_result.gt_inds > 0, as_tuple=False).squeeze(-1)
+            if pos_inds.numel() == 0:
+                continue
+
+            matched_tgt_idx = assign_result.gt_inds[pos_inds] - 1
+            gt_labels = getattr(gt_instances, 'labels', None)
+            if gt_labels is None:
+                fg_mask = torch.ones_like(pos_inds, dtype=torch.bool, device=device)
+            else:
+                if not torch.is_tensor(gt_labels):
+                    gt_labels = torch.as_tensor(gt_labels, dtype=torch.long, device=device)
+                else:
+                    gt_labels = gt_labels.to(device=device, dtype=torch.long)
+                fg_mask = gt_labels[matched_tgt_idx] > 0
+
+            fg_pos_inds = pos_inds[fg_mask]
+            if fg_pos_inds.numel() == 0:
+                continue
+
+            pred_logits = all_mask_preds[-1][i][fg_pos_inds]   # [N, H, W]
+            pred_prob = torch.sigmoid(pred_logits).unsqueeze(1)  # [N, 1, H, W]
+
+            dil = F.max_pool2d(pred_prob, kernel_size=3, stride=1, padding=1)
+            ero = -F.max_pool2d(-pred_prob, kernel_size=3, stride=1, padding=1)
+            opened = F.max_pool2d(ero, kernel_size=3, stride=1, padding=1)
+            closed = -F.max_pool2d(-dil, kernel_size=3, stride=1, padding=1)
+
+            hole_penalty = F.l1_loss(pred_prob, closed, reduction='mean')
+            frag_penalty = F.l1_loss(pred_prob, opened, reduction='mean')
+
+            tv_h = torch.abs(pred_prob[:, :, 1:, :] - pred_prob[:, :, :-1, :]).mean()
+            tv_w = torch.abs(pred_prob[:, :, :, 1:] - pred_prob[:, :, :, :-1]).mean()
+            tv_penalty = 0.5 * (tv_h + tv_w)
+
+            area = pred_prob.mean(dim=(2, 3))  # [N,1]
+            tiny_penalty = torch.relu(0.02 - area).mean()
+
+            loss_i = hole_penalty + frag_penalty + 0.2 * tv_penalty + 0.2 * tiny_penalty
+            total_loss = total_loss + loss_i
+            num_terms += 1
+
+        if num_terms == 0:
+            return all_mask_preds[-1].sum() * 0.0
+        return (total_loss / float(num_terms)) * self.topology_loss_weight
+
+    @staticmethod
+    def _safe_get_metainfo(sample: SegDataSample, key: str, default=None):
+        meta = getattr(sample, 'metainfo', {})
+        if isinstance(meta, dict):
+            return meta.get(key, default)
+        return getattr(meta, key, default)
+
+    def _compute_dense_geometry_loss(
+        self,
+        pred_dense_normals: torch.Tensor,
+        data_samples: List[SegDataSample],
+        device: torch.device,
+    ) -> torch.Tensor:
+        if self.dense_geometry_head is None or self.dense_normal_loss is None:
+            return pred_dense_normals.sum() * 0.0
+        if self.dense_geometry_loss_weight <= 0.0:
+            return pred_dense_normals.sum() * 0.0
+
+        b, _, h, w = pred_dense_normals.shape
+        gt_batch = []
+        valid_batch = []
+        has_valid_sample = False
+        for i in range(b):
+            gt_n = getattr(data_samples[i], 'gt_normals', None)
+            gt_data = getattr(gt_n, 'data', None) if gt_n is not None else None
+            if gt_data is None:
+                gt_map = torch.zeros((3, h, w), dtype=pred_dense_normals.dtype, device=device)
+                valid_map = torch.zeros((h, w), dtype=pred_dense_normals.dtype, device=device)
+                gt_batch.append(gt_map)
+                valid_batch.append(valid_map)
+                continue
+            if not torch.is_tensor(gt_data):
+                gt_data = torch.as_tensor(gt_data, dtype=pred_dense_normals.dtype, device=device)
+            else:
+                gt_data = gt_data.to(device=device, dtype=pred_dense_normals.dtype)
+            if gt_data.ndim == 4:
+                gt_data = gt_data.squeeze(0)
+            if gt_data.shape[0] != 3 and gt_data.shape[-1] == 3:
+                gt_data = gt_data.permute(2, 0, 1).contiguous()
+            if gt_data.shape[-2:] != (h, w):
+                gt_data = F.interpolate(
+                    gt_data.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
+
+            valid_normal = float(self._safe_get_metainfo(data_samples[i], 'valid_normal', 1.0))
+            if valid_normal <= 0.0:
+                valid_map = torch.zeros((h, w), dtype=pred_dense_normals.dtype, device=device)
+            else:
+                valid_map = (gt_data.abs().sum(dim=0) > 1e-6).float()
+                if valid_map.sum() > 0:
+                    has_valid_sample = True
+
+            gt_batch.append(gt_data)
+            valid_batch.append(valid_map)
+
+        if not gt_batch:
+            return pred_dense_normals.sum() * 0.0
+        gt = torch.stack(gt_batch, dim=0)
+        valid = torch.stack(valid_batch, dim=0)
+        if not has_valid_sample:
+            return pred_dense_normals.sum() * 0.0
+
+        loss = self.dense_normal_loss(pred_dense_normals, gt, valid_mask=valid)
+        return loss * self.dense_geometry_loss_weight
+
+    def _compute_piecewise_planar_regularization(
+        self,
+        pred_dense_normals: torch.Tensor,
+        data_samples: List[SegDataSample],
+        device: torch.device,
+    ) -> torch.Tensor:
+        if self.piecewise_planar_loss_weight <= 0.0:
+            return pred_dense_normals.sum() * 0.0
+
+        b, _, h, w = pred_dense_normals.shape
+        total = pred_dense_normals.sum() * 0.0
+        n_terms = 0
+
+        for i in range(b):
+            gt_instances = getattr(data_samples[i], 'gt_instances', None)
+            if gt_instances is None or len(gt_instances) == 0:
+                continue
+            gt_labels = getattr(gt_instances, 'labels', None)
+            if gt_labels is None:
+                continue
+            if not torch.is_tensor(gt_labels):
+                gt_labels = torch.as_tensor(gt_labels, dtype=torch.long, device=device)
+            else:
+                gt_labels = gt_labels.to(device=device, dtype=torch.long)
+
+            raw_masks = gt_instances.masks
+            if hasattr(raw_masks, 'to_tensor'):
+                masks = raw_masks.to_tensor(dtype=torch.bool, device=device)
+            else:
+                if not torch.is_tensor(raw_masks):
+                    masks = torch.as_tensor(raw_masks, device=device)
+                else:
+                    masks = raw_masks.to(device=device)
+                masks = masks.bool()
+            if masks.ndim == 2:
+                masks = masks.unsqueeze(0)
+
+            if masks.shape[-2:] != (h, w):
+                masks = F.interpolate(
+                    masks.float().unsqueeze(1), size=(h, w), mode='nearest').squeeze(1).bool()
+
+            pred = pred_dense_normals[i].permute(1, 2, 0).contiguous()  # [H,W,3]
+            for j in range(min(masks.shape[0], gt_labels.shape[0])):
+                if int(gt_labels[j].item()) <= 0:
+                    continue
+                m = masks[j]
+                area = int(m.sum().item())
+                if area < 32:
+                    continue
+                n_pix = pred[m]  # [N,3]
+                mean_n = F.normalize(n_pix.mean(dim=0), p=2, dim=0, eps=1e-6)
+                inconsistency = 1.0 - (n_pix * mean_n.unsqueeze(0)).sum(dim=-1)
+                area_w = float(min(area / float(h * w), 1.0))
+                total = total + inconsistency.mean() * area_w
+                n_terms += 1
+
+        if n_terms == 0:
+            return pred_dense_normals.sum() * 0.0
+        return (total / float(n_terms)) * self.piecewise_planar_loss_weight
+
+    @staticmethod
+    def _mask_to_edge(mask: torch.Tensor) -> torch.Tensor:
+        if mask.ndim == 2:
+            mask = mask.unsqueeze(0).unsqueeze(0)
+        elif mask.ndim == 3:
+            mask = mask.unsqueeze(1)
+        dil = F.max_pool2d(mask.float(), kernel_size=3, stride=1, padding=1)
+        ero = -F.max_pool2d(-mask.float(), kernel_size=3, stride=1, padding=1)
+        edge = (dil - ero).clamp(min=0.0, max=1.0)
+        return edge
+
+    def _compute_edge_loss(
+        self,
+        edge_logits: torch.Tensor,
+        data_samples: List[SegDataSample],
+        device: torch.device,
+    ) -> torch.Tensor:
+        if self.edge_head is None or self.edge_loss is None:
+            return edge_logits.sum() * 0.0
+        if self.edge_loss_weight <= 0.0:
+            return edge_logits.sum() * 0.0
+
+        b, _, h, w = edge_logits.shape
+        targets = []
+        valid = []
+        for i in range(b):
+            gt_instances = getattr(data_samples[i], 'gt_instances', None)
+            edge_t = torch.zeros((1, h, w), dtype=edge_logits.dtype, device=device)
+            if gt_instances is not None and len(gt_instances) > 0:
+                raw_masks = gt_instances.masks
+                if hasattr(raw_masks, 'to_tensor'):
+                    masks = raw_masks.to_tensor(dtype=torch.bool, device=device)
+                else:
+                    if not torch.is_tensor(raw_masks):
+                        masks = torch.as_tensor(raw_masks, device=device)
+                    else:
+                        masks = raw_masks.to(device=device)
+                    masks = masks.bool()
+                if masks.ndim == 2:
+                    masks = masks.unsqueeze(0)
+                if masks.shape[-2:] != (h, w):
+                    masks = F.interpolate(
+                        masks.float().unsqueeze(1), size=(h, w), mode='nearest').squeeze(1).bool()
+                union = masks.any(dim=0, keepdim=True).float()
+                edge_t = self._mask_to_edge(union)[0]
+            else:
+                gt_sem = getattr(data_samples[i], 'gt_sem_seg', None)
+                gt_sem_data = getattr(gt_sem, 'data', None) if gt_sem is not None else None
+                if gt_sem_data is not None:
+                    if not torch.is_tensor(gt_sem_data):
+                        gt_sem_data = torch.as_tensor(gt_sem_data, device=device)
+                    else:
+                        gt_sem_data = gt_sem_data.to(device=device)
+                    if gt_sem_data.ndim == 3:
+                        roof = (gt_sem_data[0] > 0).float().unsqueeze(0)
+                    else:
+                        roof = (gt_sem_data > 0).float().unsqueeze(0)
+                    if roof.shape[-2:] != (h, w):
+                        roof = F.interpolate(
+                            roof.unsqueeze(0), size=(h, w), mode='nearest').squeeze(0)
+                    edge_t = self._mask_to_edge(roof)[0]
+            targets.append(edge_t)
+            valid.append(torch.ones((1, h, w), dtype=edge_logits.dtype, device=device))
+
+        tgt = torch.stack(targets, dim=0)
+        vm = torch.stack(valid, dim=0)
+
+        if isinstance(self.edge_loss, nn.BCEWithLogitsLoss):
+            loss = F.binary_cross_entropy_with_logits(edge_logits, tgt, reduction='none')
+            loss = (loss * vm).sum() / vm.sum().clamp(min=1.0)
+        else:
+            loss = self.edge_loss(edge_logits, tgt)
+        return loss * self.edge_loss_weight
+
+    def _compute_sam_distill_loss(
+        self,
+        all_cls_scores: List[torch.Tensor],
+        all_mask_preds: List[torch.Tensor],
+        data_samples: List[SegDataSample],
+        device: torch.device,
+    ) -> torch.Tensor:
+        if self.sam_distill_loss is None or self.sam_distill_weight <= 0.0:
+            return all_mask_preds[-1].sum() * 0.0
+
+        cls_logits = all_cls_scores[-1]     # [B,Q,C+1]
+        mask_logits = all_mask_preds[-1]    # [B,Q,H,W]
+        cls_prob = torch.softmax(cls_logits, dim=-1)
+        if cls_prob.shape[-1] >= 3:
+            roof_q = cls_prob[..., 1:-1].sum(dim=-1)  # foreground classes, exclude bg/no-object
+        else:
+            roof_q = cls_prob[..., :-1].sum(dim=-1)
+        roof_q = roof_q.clamp(min=0.0, max=1.0)
+        mask_prob = torch.sigmoid(mask_logits)
+        weighted = roof_q[:, :, None, None] * mask_prob
+        roof_prob = weighted.sum(dim=1) / roof_q.sum(dim=1, keepdim=True).clamp(min=1e-6)[:, :, None]
+        roof_prob = roof_prob.squeeze(1) if roof_prob.ndim == 4 else roof_prob
+        roof_logits = torch.logit(roof_prob.clamp(min=1e-5, max=1 - 1e-5))
+
+        teacher_list = []
+        valid_list = []
+        b, h, w = roof_logits.shape
+        for i in range(b):
+            sam_seg = getattr(data_samples[i], 'gt_sam_seg', None)
+            sam_data = getattr(sam_seg, 'data', None) if sam_seg is not None else None
+            if sam_data is None:
+                teacher = torch.zeros((h, w), dtype=roof_logits.dtype, device=device)
+                valid = torch.zeros((h, w), dtype=roof_logits.dtype, device=device)
+            else:
+                if not torch.is_tensor(sam_data):
+                    sam_data = torch.as_tensor(sam_data, device=device)
+                else:
+                    sam_data = sam_data.to(device=device)
+                if sam_data.ndim == 3:
+                    teacher = (sam_data[0] > 0).float()
+                else:
+                    teacher = (sam_data > 0).float()
+                if teacher.shape[-2:] != (h, w):
+                    teacher = F.interpolate(
+                        teacher.unsqueeze(0).unsqueeze(0),
+                        size=(h, w),
+                        mode='nearest').squeeze(0).squeeze(0)
+                valid = torch.ones((h, w), dtype=roof_logits.dtype, device=device)
+            teacher_list.append(teacher)
+            valid_list.append(valid)
+
+        teacher_batch = torch.stack(teacher_list, dim=0)
+        valid_batch = torch.stack(valid_list, dim=0)
+        if valid_batch.sum() <= 0:
+            return roof_logits.sum() * 0.0
+        loss = self.sam_distill_loss(roof_logits, teacher_batch, valid_mask=valid_batch)
+        return loss * self.sam_distill_weight
+
     def loss(self, inputs: torch.Tensor, data_samples: List[SegDataSample]) -> dict:
         """
         Multi-task loss: segmentation + classification + geometry.
@@ -418,26 +801,60 @@ class DeepRoofMask2Former(Mask2FormerBase):
         # C. Segmentation Losses (also captures Hungarian matching in decode_head)
         losses = self._loss_by_feat_compat(all_cls_scores, all_mask_preds, data_samples)
 
-        # D. Geometry Head Prediction
-        if not hasattr(self.decode_head, 'last_query_embeddings'):
-            losses['loss_geometry'] = all_cls_scores[0].sum() * 0.0
-            return losses
+        # D. Query-geometry prediction/loss
+        geo_loss = all_cls_scores[0].sum() * 0.0
+        if hasattr(self.decode_head, 'last_query_embeddings'):
+            query_embeddings = self._normalize_query_embeddings(
+                getattr(self.decode_head, 'last_query_embeddings', None),
+                batch_size=len(data_samples),
+                all_cls_scores=all_cls_scores,
+            )
+            if query_embeddings is not None:
+                geo_preds = self.geometry_head(query_embeddings)  # [B, Q, 3]
+                geo_loss = self._compute_geometry_loss_with_reused_matching(
+                    geo_preds=geo_preds,
+                    all_cls_scores=all_cls_scores,
+                    all_mask_preds=all_mask_preds,
+                    data_samples=data_samples,
+                    device=inputs.device,
+                )
+        losses['loss_geometry'] = geo_loss
 
-        query_embeddings = self._normalize_query_embeddings(
-            getattr(self.decode_head, 'last_query_embeddings', None),
-            batch_size=len(data_samples),
+        # E. Dense normal branch (optional)
+        if self.dense_geometry_head is not None:
+            pred_dense_normals = self.dense_geometry_head(
+                x, output_size=(int(inputs.shape[-2]), int(inputs.shape[-1])))
+            losses['loss_dense_normal'] = self._compute_dense_geometry_loss(
+                pred_dense_normals=pred_dense_normals,
+                data_samples=data_samples,
+                device=inputs.device,
+            )
+            losses['loss_piecewise_planar'] = self._compute_piecewise_planar_regularization(
+                pred_dense_normals=pred_dense_normals,
+                data_samples=data_samples,
+                device=inputs.device,
+            )
+
+        # F. Edge branch (optional)
+        if self.edge_head is not None:
+            edge_logits = self.edge_head(
+                x, output_size=(int(inputs.shape[-2]), int(inputs.shape[-1])))
+            losses['loss_edge'] = self._compute_edge_loss(
+                edge_logits=edge_logits,
+                data_samples=data_samples,
+                device=inputs.device,
+            )
+
+        # G. SAM distillation (optional)
+        losses['loss_sam_distill'] = self._compute_sam_distill_loss(
             all_cls_scores=all_cls_scores,
+            all_mask_preds=all_mask_preds,
+            data_samples=data_samples,
+            device=inputs.device,
         )
-        if query_embeddings is None:
-            losses['loss_geometry'] = all_cls_scores[0].sum() * 0.0
-            return losses
 
-        geo_preds = self.geometry_head(query_embeddings)  # [B, Q, 3]
-
-        # E. Geometry Loss (reusing match from step C — Bug #5 fix)
-        losses['loss_geometry'] = self._compute_geometry_loss_with_reused_matching(
-            geo_preds=geo_preds,
-            all_cls_scores=all_cls_scores,
+        # H. Topology regularization on matched foreground masks
+        losses['loss_topology'] = self._compute_topology_regularization(
             all_mask_preds=all_mask_preds,
             data_samples=data_samples,
             device=inputs.device,
@@ -450,12 +867,27 @@ class DeepRoofMask2Former(Mask2FormerBase):
         Inference with geometry predictions attached to each detected instance.
         """
         self.test_cfg = self._normalize_test_cfg(getattr(self, 'test_cfg', None))
+        need_aux_maps = (self.dense_geometry_head is not None) or (self.edge_head is not None)
+        aux_dense = None
+        aux_edge = None
 
         # Reset cache
         if hasattr(self.decode_head, 'last_query_embeddings'):
             self.decode_head.last_query_embeddings = None
         if hasattr(self.decode_head, 'last_cls_scores'):
             self.decode_head.last_cls_scores = None
+
+        if need_aux_maps:
+            with torch.no_grad():
+                aux_feats = self.extract_feat(inputs)
+                if self.dense_geometry_head is not None:
+                    aux_dense = self.dense_geometry_head(
+                        aux_feats,
+                        output_size=(int(inputs.shape[-2]), int(inputs.shape[-1])))
+                if self.edge_head is not None:
+                    aux_edge = torch.sigmoid(self.edge_head(
+                        aux_feats,
+                        output_size=(int(inputs.shape[-2]), int(inputs.shape[-1]))))
 
         results = super().predict(inputs, data_samples)
 
@@ -502,5 +934,24 @@ class DeepRoofMask2Former(Mask2FormerBase):
                             pad = pred_normals[-1:].repeat(repeat_n, 1)
                             pred_normals = torch.cat([pred_normals, pad], dim=0)
                     insts.normals = pred_normals[:len(insts)]
+
+        if aux_dense is not None or aux_edge is not None:
+            try:
+                from mmengine.structures import PixelData
+            except Exception:
+                PixelData = None
+            for i in range(len(results)):
+                if aux_dense is not None:
+                    dense_i = aux_dense[i]
+                    if PixelData is not None:
+                        results[i].pred_dense_normals = PixelData(data=dense_i)
+                    else:
+                        results[i].pred_dense_normals = dense_i
+                if aux_edge is not None:
+                    edge_i = aux_edge[i]
+                    if PixelData is not None:
+                        results[i].pred_edge_map = PixelData(data=edge_i)
+                    else:
+                        results[i].pred_edge_map = edge_i
 
         return results

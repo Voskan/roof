@@ -1,10 +1,15 @@
 import os
 import sys
+import random
 from pathlib import Path
+
+import numpy as np
 import torch
 from mmengine.config import Config
 from mmengine.runner import Runner
 from mmseg.utils import register_all_modules
+
+from deeproof.utils.runtime_compat import apply_runtime_compat
 
 # 1. Environment Setup
 project_root = Path(__file__).parent.absolute()
@@ -41,6 +46,8 @@ if cfg.get('val_dataloader') is not None and cfg.get('val_evaluator') is not Non
 if cfg.get('test_dataloader') is not None and cfg.get('test_evaluator') is not None and cfg.get('test_cfg') is None:
     cfg.test_cfg = dict(type='TestLoop')
 
+apply_runtime_compat(cfg)
+
 # 4. Checkpoint Loading
 # Start from the best available baseline to preserve learned features.
 # New query slots (300 total) will be initialized while preserving the first 100.
@@ -53,6 +60,13 @@ else:
 
 # 5. Kickoff
 if __name__ == "__main__":
+    seed = 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    cfg.randomness = dict(seed=seed, deterministic=False)
+
     device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'
     print(f"[*] Starting Absolute Ideal SOTA Training on: {device_name}")
     print(f"[*] Config:   {CONFIG_PATH}")

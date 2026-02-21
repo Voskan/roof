@@ -30,6 +30,7 @@ wandb/
 runs/
 *.log
 *.json
+!docs/source_of_truth.json
 
 # Data
 data/

@@ -5,6 +5,9 @@ import rasterio
 import numpy as np
 from typing import List, Dict, Union, Any
 
+from deeproof.utils.vectorization import is_valid_polygon
+
+
 def export_to_geojson(polygons: List[np.ndarray], 
                       attributes: List[Dict[str, Any]], 
                       output_path: str, 
@@ -31,9 +34,11 @@ def export_to_geojson(polygons: List[np.ndarray],
         attributes = attributes[:min_len]
     
     for i, (poly, attr) in enumerate(zip(polygons, attributes)):
-        pts = poly.reshape(-1, 2)
+        pts = np.asarray(poly).reshape(-1, 2)
         
         if len(pts) < 3:
+            continue
+        if not is_valid_polygon(pts, min_area=1.0):
             continue
             
         # Transform pixel coordinates (x=col, y=row) to map coordinates
@@ -52,6 +57,8 @@ def export_to_geojson(polygons: List[np.ndarray],
             geom = Polygon(map_pts)
             if not geom.is_valid:
                 geom = geom.buffer(0) # Fix invalid geometries
+            if geom.is_empty:
+                continue
         except Exception as e:
             print(f"Error creating polygon {i}: {e}")
             continue

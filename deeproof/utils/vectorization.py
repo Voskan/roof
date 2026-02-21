@@ -2,7 +2,39 @@
 import cv2
 import numpy as np
 import math
-from typing import List, Union
+from typing import List, Optional, Union, Tuple
+
+
+def to_cv2_poly(points: np.ndarray, round_coords: bool = True) -> Optional[np.ndarray]:
+    """
+    Convert polygon points into OpenCV-compatible contour array.
+
+    Returns:
+        np.ndarray | None: (N, 1, 2) int32 or float32 contiguous array.
+    """
+    if points is None:
+        return None
+    arr = np.asarray(points)
+    if arr.size == 0:
+        return None
+    arr = arr.reshape(-1, 2)
+    if arr.shape[0] < 3:
+        return None
+    if not np.isfinite(arr).all():
+        return None
+    if round_coords:
+        arr = np.rint(arr).astype(np.int32)
+    else:
+        arr = arr.astype(np.float32)
+    return np.ascontiguousarray(arr.reshape(-1, 1, 2))
+
+
+def is_valid_polygon(points: np.ndarray, min_area: float = 1.0) -> bool:
+    poly_f32 = to_cv2_poly(points, round_coords=False)
+    if poly_f32 is None:
+        return False
+    area = float(cv2.contourArea(poly_f32))
+    return bool(np.isfinite(area) and area >= float(min_area))
 
 def calculate_angle(p1, p2, p3):
     """
@@ -249,11 +281,53 @@ def snap_to_dominant_orientation(pts: np.ndarray) -> np.ndarray:
     
     return pts_final
 
+
+def _project_point_to_segment(
+    p: np.ndarray,
+    seg: Tuple[float, float, float, float],
+) -> Tuple[np.ndarray, float]:
+    x1, y1, x2, y2 = [float(v) for v in seg]
+    a = np.asarray([x1, y1], dtype=np.float32)
+    b = np.asarray([x2, y2], dtype=np.float32)
+    ab = b - a
+    denom = float(np.dot(ab, ab))
+    if denom < 1e-8:
+        d = float(np.linalg.norm(p - a))
+        return a, d
+    t = float(np.dot(p - a, ab) / denom)
+    t = float(np.clip(t, 0.0, 1.0))
+    proj = a + t * ab
+    d = float(np.linalg.norm(p - proj))
+    return proj, d
+
+
+def snap_polygon_to_lines(
+    pts: np.ndarray,
+    structural_lines: List[Tuple[float, float, float, float]],
+    snap_dist: float = 4.0,
+) -> np.ndarray:
+    if pts.shape[0] < 3 or not structural_lines:
+        return pts
+    out = pts.copy()
+    for i in range(out.shape[0]):
+        p = out[i]
+        best_proj = p
+        best_d = float(snap_dist)
+        for seg in structural_lines:
+            proj, d = _project_point_to_segment(p, seg)
+            if d < best_d:
+                best_d = d
+                best_proj = proj
+        out[i] = best_proj
+    return out
+
 def regularize_building_polygons(mask: np.ndarray,
                                  epsilon_factor: float = 0.02,
                                  ortho_threshold: float = 10.0,
                                  min_area: int = 100,
-                                 enforce_ortho: bool = False) -> List[np.ndarray]:
+                                 enforce_ortho: bool = False,
+                                 structural_lines: Optional[List[Tuple[float, float, float, float]]] = None,
+                                 snap_dist: float = 4.0) -> List[np.ndarray]:
     """
     Convert a binary mask to stable building polygons.
 
@@ -300,6 +374,14 @@ def regularize_building_polygons(mask: np.ndarray,
             pts = enforce_orthogonality(pts, ortho_threshold).reshape(-1, 2).astype(np.float32)
             pts = enforce_orthogonality(pts, ortho_threshold).reshape(-1, 2).astype(np.float32)
 
+        # Optional graph snapping to structural lines.
+        if structural_lines:
+            pts = snap_polygon_to_lines(
+                pts=pts,
+                structural_lines=structural_lines,
+                snap_dist=float(snap_dist),
+            )
+
         # Remove consecutive duplicate vertices.
         if len(pts) >= 2:
             dedup = [pts[0]]
@@ -315,7 +397,9 @@ def regularize_building_polygons(mask: np.ndarray,
         pts[:, 0] = np.clip(pts[:, 0], 0.0, float(w - 1))
         pts[:, 1] = np.clip(pts[:, 1], 0.0, float(h - 1))
 
-        poly = np.ascontiguousarray(pts.reshape(-1, 1, 2).astype(np.float32))
+        poly = to_cv2_poly(pts, round_coords=False)
+        if poly is None:
+            continue
         area = float(cv2.contourArea(poly))
         if area < float(min_area):
             continue

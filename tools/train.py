@@ -1,15 +1,19 @@
 
 import argparse
-import logging
+import hashlib
 import os
 import os.path as osp
+import random
+import subprocess
+from pathlib import Path
 
+import numpy as np
 import torch
 from mmengine.config import Config, DictAction
-from mmengine.logging import print_log
 from mmengine.runner import Runner
-from mmseg.registry import RUNNERS
 from mmseg.utils import register_all_modules
+
+from deeproof.utils.runtime_compat import apply_runtime_compat
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train DeepRoof-2026 Model')
@@ -41,10 +45,108 @@ def parse_args():
         default='none',
         help='job launcher')
     parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--seed', type=int, default=42, help='Global random seed')
+    parser.add_argument(
+        '--deterministic',
+        action='store_true',
+        default=False,
+        help='Enable deterministic CUDA behavior (slower, more reproducible)')
+    parser.add_argument(
+        '--hard-examples-file',
+        type=str,
+        default='',
+        help='Optional text file with hard sample ids for oversampling')
+    parser.add_argument(
+        '--hard-example-repeat',
+        type=int,
+        default=1,
+        help='Repeat factor for hard samples (>=1)')
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
     return args
+
+
+def _set_global_seed(seed: int, deterministic: bool = False):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def _runtime_versions() -> dict:
+    versions = {'torch': torch.__version__}
+    try:
+        import mmcv
+        versions['mmcv'] = mmcv.__version__
+    except Exception:
+        versions['mmcv'] = 'N/A'
+    try:
+        import mmseg
+        versions['mmseg'] = mmseg.__version__
+    except Exception:
+        versions['mmseg'] = 'N/A'
+    try:
+        import mmdet
+        versions['mmdet'] = mmdet.__version__
+    except Exception:
+        versions['mmdet'] = 'N/A'
+    return versions
+
+
+def _dump_resolved_cfg(cfg: Config):
+    work_dir = Path(cfg.work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    resolved_path = work_dir / 'resolved_config.py'
+    cfg_text = cfg.pretty_text
+    resolved_path.write_text(cfg_text, encoding='utf-8')
+    versions = _runtime_versions()
+    runtime_path = work_dir / 'runtime_versions.txt'
+    runtime_path.write_text(
+        '\n'.join([f'{k}={v}' for k, v in versions.items()]),
+        encoding='utf-8')
+
+    def _sha256_file(path: Path) -> str:
+        if not path.exists() or not path.is_file():
+            return ''
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
+
+    git_sha = ''
+    try:
+        git_sha = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            stderr=subprocess.DEVNULL,
+            text=True).strip()
+    except Exception:
+        git_sha = ''
+
+    data_hash = ''
+    train_ds = cfg.get('train_dataloader', {}).get('dataset', {})
+    data_root = train_ds.get('data_root', '')
+    ann_file = train_ds.get('ann_file', '')
+    if data_root and ann_file:
+        ann_path = Path(data_root) / ann_file
+        data_hash = _sha256_file(ann_path)
+
+    manifest = {
+        'git_sha': git_sha,
+        'config_sha256': hashlib.sha256(cfg_text.encode('utf-8')).hexdigest(),
+        'data_split_sha256': data_hash,
+        'runtime_versions': versions,
+    }
+    try:
+        import json
+        (work_dir / 'run_manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+
 
 def main():
     args = parse_args()
@@ -61,6 +163,8 @@ def main():
     import deeproof.models.heads.geometry_head
     import deeproof.models.losses
     import deeproof.datasets.roof_dataset
+
+    _set_global_seed(seed=args.seed, deterministic=args.deterministic)
 
     # Load config
     cfg = Config.fromfile(args.config)
@@ -85,11 +189,12 @@ def main():
     if args.resume:
         cfg.resume = True
 
-    # MMEngine compatibility: enforce loop config triads.
-    if cfg.get('val_dataloader') is not None and cfg.get('val_evaluator') is not None and cfg.get('val_cfg') is None:
-        cfg.val_cfg = dict(type='ValLoop')
-    if cfg.get('test_dataloader') is not None and cfg.get('test_evaluator') is not None and cfg.get('test_cfg') is None:
-        cfg.test_cfg = dict(type='TestLoop')
+    # Reproducibility and compatibility.
+    cfg.randomness = dict(seed=args.seed, deterministic=args.deterministic)
+    if args.hard_examples_file:
+        cfg.train_dataloader.dataset.hard_examples_file = args.hard_examples_file
+        cfg.train_dataloader.dataset.hard_example_repeat = max(int(args.hard_example_repeat), 1)
+    apply_runtime_compat(cfg)
     
     # Checkpoint Configuration (Best IoU)
     # Ensure default_hooks.checkpoint exists and configure it
@@ -126,6 +231,8 @@ def main():
             type='SegLocalVisualizer',
             vis_backends=[dict(type='LocalVisBackend'), dict(type='TensorboardVisBackend')],
             name='visualizer')
+
+    _dump_resolved_cfg(cfg)
 
     # Build the runner
     runner = Runner.from_cfg(cfg)

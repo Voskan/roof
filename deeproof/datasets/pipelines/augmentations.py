@@ -29,6 +29,22 @@ def _image_compression_transform(p=1.0):
     # Albumentations 1.x API
     return A.ImageCompression(quality_lower=60, quality_upper=90, p=p)
 
+
+def _downscale_transform(p=1.0):
+    """Create a Downscale transform compatible with Albumentations v1/v2."""
+    params = inspect.signature(A.Downscale.__init__).parameters
+    if 'scale_range' in params:
+        if 'interpolation_pair' in params:
+            return A.Downscale(
+                scale_range=(0.45, 0.75),
+                interpolation_pair={
+                    'downscale': cv2.INTER_AREA,
+                    'upscale': cv2.INTER_LINEAR
+                },
+                p=p)
+        return A.Downscale(scale_range=(0.45, 0.75), p=p)
+    return A.Downscale(scale_min=0.45, scale_max=0.75, interpolation=cv2.INTER_LINEAR, p=p)
+
 def rotate_normals(normals, angle_degrees):
     """
     Apply a 2D rotation matrix to the (nx, ny) components of the normal map.
@@ -79,6 +95,8 @@ class GeometricAugmentation(A.ReplayCompose):
         kwargs['additional_targets']['normals'] = 'mask'
         # Keep instance masks aligned with the exact same geometric transform.
         kwargs['additional_targets']['instance_mask'] = 'mask'
+        # Optional SAM teacher mask for distillation.
+        kwargs['additional_targets']['sam_mask'] = 'mask'
         
         super().__init__(transforms, **kwargs)
 
@@ -183,7 +201,9 @@ class GoogleMapsAugmentation(GeometricAugmentation):
     Production-ready augmentation pipeline for DeepRoof-2026.
     Includes SOTA shadow synthesis and multi-scale priors.
     """
-    def __init__(self, prob=0.5, use_shadow=True):
+    def __init__(self, prob=0.5, use_shadow=True, degradation_level=1.0):
+        degradation_level = float(np.clip(degradation_level, 0.0, 1.0))
+        photo_prob = 0.25 + 0.25 * degradation_level
         pipeline = [
             # 1. Multi-Scale Training Prior (Absolute Ideal)
             # Randomly scale image from 0.5x to 1.5x to handle GSD variance
@@ -210,9 +230,12 @@ class GoogleMapsAugmentation(GeometricAugmentation):
             A.OneOf([
                 _gauss_noise_transform(p=1.0),
                 A.MotionBlur(blur_limit=5, p=1.0),
+                A.GaussianBlur(blur_limit=(3, 7), p=1.0),
+                _downscale_transform(p=1.0),
                 A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
+                A.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.12, hue=0.04, p=1.0),
                 _image_compression_transform(p=1.0),
-            ], p=0.3),
+            ], p=photo_prob),
         ]
         super().__init__(pipeline)
 

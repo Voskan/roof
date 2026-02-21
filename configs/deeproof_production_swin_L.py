@@ -11,8 +11,12 @@ custom_imports = dict(
         'deeproof.models.backbones.swin_v2_compat',
         'deeproof.datasets.roof_dataset',
         'deeproof.models.heads.mask2former_head',
+        'deeproof.models.heads.dense_normal_head',
+        'deeproof.models.heads.edge_head',
         'deeproof.models.deeproof_model',
-        'deeproof.models.heads.geometry_head'
+        'deeproof.models.heads.geometry_head',
+        'deeproof.models.losses',
+        'deeproof.evaluation.metrics',
     ],
     allow_failed_imports=False)
 
@@ -48,6 +52,32 @@ model = dict(
         loss_weight=2.0,
         azimuth_weight=1.5  # Heavy focus on slope-aware azimuth
     ),
+    dense_geometry_head=dict(
+        type='DenseNormalHead',
+        in_channels=192,
+        hidden_channels=128,
+        feat_index=0,
+        num_convs=2,
+    ),
+    dense_normal_loss=dict(
+        type='DeepRoofDenseNormalLoss',
+        angular_weight=1.0,
+        l1_weight=0.5,
+        loss_weight=1.0,
+    ),
+    dense_geometry_loss_weight=0.6,
+    piecewise_planar_loss_weight=0.2,
+    edge_head=dict(
+        type='RoofEdgeHead',
+        in_channels=192,
+        hidden_channels=96,
+        feat_index=0,
+        num_layers=2,
+        out_channels=1,
+    ),
+    edge_loss_weight=0.2,
+    sam_distill_weight=0.15,
+    topology_loss_weight=0.15,
 
     decode_head=dict(
         type='DeepRoofMask2FormerHead',
@@ -118,12 +148,15 @@ model = dict(
             # FIX: Increased sloped weight from 3->10 to combat extreme class imbalance.
             class_weight=[1.0, 1.0, 10.0, 0.1]),
         loss_mask=dict(
-            type='DeepRoofCrossEntropyLoss',
-            use_sigmoid=True,
+            type='DeepRoofHybridMaskLoss',
+            bce_weight=1.0,
+            lovasz_weight=1.0,
             loss_weight=5.0,
             reduction='mean'),
         loss_dice=dict(
-            type='DeepRoofDiceLoss',
+            type='DeepRoofDiceBoundaryLoss',
+            dice_weight=0.8,
+            boundary_weight=0.2,
             loss_weight=5.0,
             eps=1e-6,
             reduction='mean',
@@ -167,6 +200,9 @@ train_dataloader = dict(
         img_suffix='.jpg',
         seg_map_suffix='.png',
         normal_suffix='.npy',
+        slope_threshold_deg=2.0,
+        sr_dual_prob=0.25,
+        sr_scale=2.0,
         image_size=(1024, 1024),
         pipeline=train_pipeline
     )
@@ -212,12 +248,17 @@ val_dataloader = dict(
         img_suffix='.jpg',
         seg_map_suffix='.png',
         normal_suffix='.npy',
+        slope_threshold_deg=2.0,
         image_size=(1024, 1024),
         pipeline=val_pipeline
     )
 )
 
-val_evaluator = dict(type='IoUMetric', iou_metrics=['mIoU'])
+val_evaluator = [
+    dict(type='IoUMetric', iou_metrics=['mIoU']),
+    dict(type='DeepRoofBoundaryMetric', tolerance=1),
+    dict(type='DeepRoofFacetMetric', overlap_threshold=0.30),
+]
 test_dataloader = val_dataloader
 test_evaluator = val_evaluator
 

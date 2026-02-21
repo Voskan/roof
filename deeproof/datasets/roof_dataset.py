@@ -32,6 +32,12 @@ class DeepRoofDataset(BaseSegDataset):
                  img_suffix: str = '.png',
                  seg_map_suffix: str = '.png',
                  normal_suffix: str = '.npy',
+                 sam_map_suffix: str = '.png',
+                 slope_threshold_deg: float = 2.0,
+                 hard_examples_file: Optional[str] = None,
+                 hard_example_repeat: int = 1,
+                 sr_dual_prob: float = 0.0,
+                 sr_scale: float = 2.0,
                  image_size: Optional[tuple] = (1024, 1024),
                  data_root: Optional[str] = None,
                  test_mode: bool = False,
@@ -40,6 +46,12 @@ class DeepRoofDataset(BaseSegDataset):
                  **kwargs):
         
         self.normal_suffix = normal_suffix
+        self.sam_map_suffix = sam_map_suffix
+        self.slope_threshold_deg = float(slope_threshold_deg)
+        self.hard_examples_file = hard_examples_file
+        self.hard_example_repeat = max(int(hard_example_repeat), 1)
+        self.sr_dual_prob = float(np.clip(sr_dual_prob, 0.0, 1.0))
+        self.sr_scale = float(max(sr_scale, 1.0))
         if image_size is None:
             self.image_size = None
         elif isinstance(image_size, int):
@@ -81,9 +93,27 @@ class DeepRoofDataset(BaseSegDataset):
                     img_path=osp.join(self.data_root, 'images', img_name + self.img_suffix),
                     seg_map_path=osp.join(self.data_root, 'masks', img_name + self.seg_map_suffix),
                     normal_path=osp.join(self.data_root, 'normals', img_name + self.normal_suffix),
+                    sam_map_path=osp.join(
+                        self.data_root,
+                        'sam_masks',
+                        img_name + getattr(self, 'sam_map_suffix', self.seg_map_suffix)),
                     img_id=img_name
                 )
                 data_list.append(data_info)
+        if self.hard_examples_file:
+            hard_path = self.hard_examples_file
+            if self.data_root is not None and not osp.isabs(hard_path):
+                hard_path = osp.join(self.data_root, hard_path)
+            if osp.isfile(hard_path):
+                with open(hard_path, 'r') as f:
+                    hard_ids = {line.strip() for line in f if line.strip()}
+                if hard_ids and self.hard_example_repeat > 1:
+                    hard_samples = [d for d in data_list if d.get('img_id', '') in hard_ids]
+                    if hard_samples:
+                        extra = []
+                        for _ in range(self.hard_example_repeat - 1):
+                            extra.extend([dict(s) for s in hard_samples])
+                        data_list.extend(extra)
         return data_list
 
     def __getitem__(self, idx: int) -> Dict:
@@ -100,6 +130,7 @@ class DeepRoofDataset(BaseSegDataset):
             raise FileNotFoundError(f"Mask not found: {data_info['seg_map_path']}")
         
         # 3. Load Normal Map
+        valid_normal = 1.0
         try:
             normals = np.load(data_info['normal_path'])
         except Exception:
@@ -107,6 +138,7 @@ class DeepRoofDataset(BaseSegDataset):
             if normals_vis is None:
                 normals = np.zeros_like(img, dtype=np.float32)
                 normals[:,:,2] = 1.0  # UP
+                valid_normal = 0.0
             else:
                 normals = (normals_vis.astype(np.float32) / 255.0) * 2.0 - 1.0
                 normals = normals[:, :, ::-1]  # BGR to RGB (XYZ)
@@ -119,12 +151,17 @@ class DeepRoofDataset(BaseSegDataset):
         
         semantic_mask = np.zeros_like(instance_mask, dtype=np.uint8)
         is_roof = instance_mask > 0
-        # FIX Bug #7: Lowered threshold from 5° to 2°.
-        # OmniCity roofs viewed from nadir rarely exceed 5°, leaving sloped class
-        # nearly empty (>98% flat). At 2° more instances are classified as sloped,
-        # improving class balance and giving the sloped head real training signal.
-        semantic_mask[(slope_deg < 2.0) & is_roof] = 1   # Flat (nearly horizontal)
-        semantic_mask[(slope_deg >= 2.0) & is_roof] = 2  # Sloped (any detectable pitch)
+        thresh = float(getattr(self, 'slope_threshold_deg', 2.0))
+        semantic_mask[(slope_deg < thresh) & is_roof] = 1
+        semantic_mask[(slope_deg >= thresh) & is_roof] = 2
+
+        # Optional SAM teacher mask for distillation
+        sam_mask = None
+        sam_path = data_info.get('sam_map_path', '')
+        if sam_path and osp.isfile(sam_path):
+            sam_raw = cv2.imread(sam_path, cv2.IMREAD_GRAYSCALE)
+            if sam_raw is not None:
+                sam_mask = (sam_raw > 0).astype(np.uint8)
         
         # 5. Apply Augmentations
         if not self.test_mode:
@@ -132,12 +169,27 @@ class DeepRoofDataset(BaseSegDataset):
                 image=img, 
                 mask=semantic_mask,
                 normals=normals,
-                instance_mask=instance_mask
+                instance_mask=instance_mask,
+                sam_mask=sam_mask if sam_mask is not None else np.zeros_like(semantic_mask, dtype=np.uint8),
             )
             img = augmented['image']
             semantic_mask = augmented['mask']
             normals = augmented['normals']
             instance_mask = augmented['instance_mask']
+            if sam_mask is not None:
+                sam_mask = augmented.get('sam_mask', sam_mask)
+
+        # Optional SR dual-branch training blend (orig + SR view)
+        sr_prob = float(getattr(self, 'sr_dual_prob', 0.0))
+        sr_scale = float(getattr(self, 'sr_scale', 2.0))
+        if not self.test_mode and sr_prob > 0.0 and np.random.rand() < sr_prob:
+            h0, w0 = img.shape[:2]
+            up_w = max(int(round(w0 * sr_scale)), 1)
+            up_h = max(int(round(h0 * sr_scale)), 1)
+            up = cv2.resize(img, (up_w, up_h), interpolation=cv2.INTER_CUBIC)
+            sr_back = cv2.resize(up, (w0, h0), interpolation=cv2.INTER_AREA)
+            alpha = float(np.random.uniform(0.35, 0.65))
+            img = cv2.addWeighted(img, 1.0 - alpha, sr_back, alpha, 0.0)
 
         # Keep per-batch target shapes consistent for Mask2Former losses.
         # RandomScale introduces variable resolutions, but mmdet's Mask2Former
@@ -166,6 +218,8 @@ class DeepRoofDataset(BaseSegDataset):
                 inst_np = inst_np.astype(inst_dtype)
             if normal_np.shape[:2] != (target_h, target_w):
                 normal_np = cv2.resize(normal_np, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            if sam_mask is not None and sam_mask.shape[:2] != (target_h, target_w):
+                sam_mask = cv2.resize(sam_mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
 
             # Re-normalize normal vectors after interpolation.
             if normal_np.ndim == 3 and normal_np.shape[2] == 3:
@@ -251,10 +305,20 @@ class DeepRoofDataset(BaseSegDataset):
                 img_id=data_info.get('img_id', ''),
                 img_path=data_info.get('img_path', ''),
                 seg_map_path=data_info.get('seg_map_path', ''),
+                sam_map_path=data_info.get('sam_map_path', ''),
+                valid_normal=float(data_info.get('valid_normal', valid_normal)),
             ))
 
         data_sample.gt_sem_seg = _safe_pixel_data(sem_map.unsqueeze(0).long())
         data_sample.gt_normals = _safe_pixel_data(normal_tensor.float())
+        if sam_mask is not None:
+            if isinstance(sam_mask, torch.Tensor):
+                sam_tensor = sam_mask.long()
+            else:
+                sam_tensor = torch.from_numpy(sam_mask.copy()).long()
+            if sam_tensor.ndim == 2:
+                sam_tensor = sam_tensor.unsqueeze(0)
+            data_sample.gt_sam_seg = _safe_pixel_data(sam_tensor)
 
         gt_instances = InstanceData()
         inst_ids = torch.unique(inst_map)

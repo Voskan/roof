@@ -1,0 +1,29 @@
+{
+  "project_name": "DeepRoof-2026",
+  "model": {
+    "segmentor": "DeepRoofMask2Former",
+    "backbone": "Swin Transformer V2-Large",
+    "num_classes": 3
+  },
+  "quick_start": {
+    "train": "python tools/train.py --config configs/deeproof_production_swin_L.py",
+    "inference": "python tools/inference.py --config configs/deeproof_production_swin_L.py --checkpoint work_dirs/deeproof_absolute_ideal_v1/iter_15000.pth --input /path/to/image.tif --output /path/to/result.geojson",
+    "profile": "python tools/perf_profile.py --config configs/deeproof_production_swin_L.py --checkpoint /path/to/model.pth --input /path/to/image.png --mode balanced --runs 10",
+    "registry": "python tools/model_registry.py --checkpoint /path/to/model.pth --metrics-json /path/to/metrics.json"
+  },
+  "kpi_targets": {
+    "roof_miou": 0.9,
+    "instance_ap50": 0.92,
+    "bfscore": 0.85,
+    "pitch_mae_deg": 3.0,
+    "azimuth_mae_deg": 7.0
+  },
+  "paths": {
+    "production_config": "configs/deeproof_production_swin_L.py",
+    "todo": "todo.md",
+    "train_tool": "tools/train.py",
+    "inference_tool": "tools/inference.py",
+    "profile_tool": "tools/perf_profile.py",
+    "registry_tool": "tools/model_registry.py"
+  }
+}

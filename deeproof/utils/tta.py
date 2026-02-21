@@ -1,11 +1,8 @@
-
-import torch
-import torch.nn.functional as F
-import numpy as np
 import cv2
+import numpy as np
+import torch
 from mmengine.structures import InstanceData
 from mmseg.structures import SegDataSample
-from torchvision.ops import nms
 
 
 def _instances_from_semantic(sem_map: torch.Tensor, min_area: int = 64) -> InstanceData:
@@ -14,7 +11,7 @@ def _instances_from_semantic(sem_map: torch.Tensor, min_area: int = 64) -> Insta
         sem_map = sem_map.squeeze(0)
     sem_map = sem_map.long()
     device = sem_map.device
-    H, W = int(sem_map.shape[-2]), int(sem_map.shape[-1])
+    h, w = int(sem_map.shape[-2]), int(sem_map.shape[-1])
 
     masks, labels, scores = [], [], []
     for cls_id in torch.unique(sem_map).tolist():
@@ -40,21 +37,13 @@ def _instances_from_semantic(sem_map: torch.Tensor, min_area: int = 64) -> Insta
         out.labels = torch.tensor(labels, dtype=torch.long, device=device)
         out.scores = torch.tensor(scores, dtype=torch.float32, device=device)
     else:
-        out.masks = torch.zeros((0, H, W), dtype=torch.bool, device=device)
+        out.masks = torch.zeros((0, h, w), dtype=torch.bool, device=device)
         out.labels = torch.zeros((0,), dtype=torch.long, device=device)
         out.scores = torch.zeros((0,), dtype=torch.float32, device=device)
     return out
 
 
-def _rotate_normal_vector(nx, ny, nz, degrees_ccw: float):
-    """
-    Rotate normal vector (nx, ny) in the image plane by degrees_ccw counter-clockwise.
-    nz is invariant (nadir view, rotation is in XY plane).
-
-    This applies the standard 2D rotation matrix:
-        nx' =  nx * cos(theta) - ny * sin(theta)
-        ny' =  nx * sin(theta) + ny * cos(theta)
-    """
+def _rotate_normal_vector(nx: float, ny: float, nz: float, degrees_ccw: float):
     theta = np.deg2rad(degrees_ccw)
     cos_t = float(np.cos(theta))
     sin_t = float(np.sin(theta))
@@ -63,66 +52,153 @@ def _rotate_normal_vector(nx, ny, nz, degrees_ccw: float):
     return nx_new, ny_new, nz
 
 
-def apply_tta(model,
-              image: np.ndarray,
-              device='cuda') -> dict:
+def _mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
+    inter = np.logical_and(mask_a, mask_b).sum()
+    if inter == 0:
+        return 0.0
+    union = np.logical_or(mask_a, mask_b).sum()
+    if union == 0:
+        return 0.0
+    return float(inter) / float(union)
+
+
+def _bbox_from_mask(mask: np.ndarray):
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    if not np.any(rows) or not np.any(cols):
+        return None
+    ymin, ymax = np.where(rows)[0][[0, -1]]
+    xmin, xmax = np.where(cols)[0][[0, -1]]
+    return [int(xmin), int(ymin), int(xmax + 1), int(ymax + 1)]
+
+
+def _normalize_normal(normal: np.ndarray) -> np.ndarray:
+    mag = float(np.linalg.norm(normal))
+    if mag > 1e-8:
+        return (normal / mag).astype(np.float32)
+    return np.asarray([0.0, 0.0, 1.0], dtype=np.float32)
+
+
+def _cluster_instances(instances, iou_threshold: float):
+    by_label = {}
+    for inst in instances:
+        by_label.setdefault(int(inst['label']), []).append(inst)
+
+    merged = []
+    for label, label_instances in by_label.items():
+        remaining = sorted(label_instances, key=lambda x: x['score'], reverse=True)
+        while remaining:
+            seed = remaining.pop(0)
+            cluster = [seed]
+
+            changed = True
+            while changed:
+                changed = False
+                keep = []
+                for cand in remaining:
+                    if any(_mask_iou(cand['mask'], m['mask']) >= iou_threshold for m in cluster):
+                        cluster.append(cand)
+                        changed = True
+                    else:
+                        keep.append(cand)
+                remaining = keep
+
+            merged.append(_fuse_cluster(cluster=cluster, label=label))
+
+    merged = [m for m in merged if m is not None]
+    merged.sort(key=lambda x: x['score'], reverse=True)
+    return merged
+
+
+def _fuse_cluster(cluster, label: int):
+    if not cluster:
+        return None
+
+    masks = [c['mask'].astype(np.float32) for c in cluster]
+    weights = np.asarray([max(float(c['score']), 1e-6) for c in cluster], dtype=np.float32)
+    weight_sum = float(weights.sum())
+    if weight_sum <= 0.0:
+        weights = np.ones_like(weights)
+        weight_sum = float(weights.sum())
+
+    weighted_prob = np.zeros_like(masks[0], dtype=np.float32)
+    for w, m in zip(weights, masks):
+        weighted_prob += w * m
+    weighted_prob /= weight_sum
+
+    fused_mask = weighted_prob >= 0.5
+    if int(fused_mask.sum()) == 0:
+        best = max(cluster, key=lambda x: x['score'])
+        fused_mask = best['mask'].astype(bool)
+
+    bbox = _bbox_from_mask(fused_mask)
+    if bbox is None:
+        return None
+
+    score = float(max(c['score'] for c in cluster))
+    out = {
+        'bbox': bbox,
+        'mask': fused_mask.astype(bool),
+        'score': score,
+        'label': int(label),
+    }
+
+    normals = [c.get('normal') for c in cluster if c.get('normal') is not None]
+    if normals:
+        fused_normal = np.zeros((3,), dtype=np.float32)
+        normal_weights = np.asarray(
+            [max(float(c['score']), 1e-6) for c in cluster if c.get('normal') is not None],
+            dtype=np.float32)
+        for w, n in zip(normal_weights, normals):
+            fused_normal += w * np.asarray(n, dtype=np.float32)
+        out['normal'] = _normalize_normal(fused_normal)
+
+    return out
+
+
+def apply_tta(
+    model,
+    image: np.ndarray,
+    device='cuda',
+    min_score: float = 0.1,
+    merge_iou: float = 0.6,
+    max_instances: int = 0,
+) -> dict:
     """
-    Apply Test Time Augmentation (TTA) on a single tile.
+    Apply TTA and aggregate predictions by mask-level fusion.
 
-    Augmentations applied to image:
-    1. Identity (0 deg)
-    2. Rotate 90 deg CCW (k=1)
-    3. Rotate 180 deg (k=2)
-    4. Rotate 270 deg CCW / 90 CW (k=3)
-    5. Horizontal Flip (flip x-axis)
-
-    For each augmented prediction, we apply the INVERSE geometric transform to
-    bring masks and normal vectors back to the original image coordinate system
-    before aggregating with NMS.
-
-    Normal vector inverse transforms (2D rotation, nz invariant):
-        rot90  (applied +90):  inverse is -90  => (nx,ny) -> ( ny/1, -nx)  [rot(-90)]
-                               Wait: torch.rot90 k=1 rotates 90 CCW, which means
-                               a point (x,y) goes to (y, W-1-x) in image coords.
-                               For vectors (centered at origin): (vx,vy) -> (-vy, vx).
-                               Inverse of that is (vx,vy) -> (vy, -vx).
-        rot180 (applied +180): inverse is -180 => (nx,ny) -> (-nx, -ny)
-        rot270 (applied -90):  inverse is +90  => (nx,ny) -> (-ny, nx)
-        hflip  (flip x):       inverse is hflip => (nx,ny) -> (-nx, ny)
+    Transforms:
+    1) identity
+    2) rot90
+    3) rot180
+    4) rot270
+    5) hflip
     """
     model.eval()
-    H, W, C = image.shape
+    h, w, _ = image.shape
+    img_tensor = torch.from_numpy(image).permute(2, 0, 1).float()
 
-    img_tensor = torch.from_numpy(image).permute(2, 0, 1).float()  # (3, H, W)
-
-    # 1. Prepare batch
     transforms = ['id', 'rot90', 'rot180', 'rot270', 'hflip']
     batch_imgs = [
-        img_tensor,                                      # id
-        torch.rot90(img_tensor, k=1, dims=[1, 2]),       # rot90 CCW
-        torch.rot90(img_tensor, k=2, dims=[1, 2]),       # rot180
-        torch.rot90(img_tensor, k=3, dims=[1, 2]),       # rot270 CCW
-        torch.flip(img_tensor, dims=[2]),                # hflip
+        img_tensor,
+        torch.rot90(img_tensor, k=1, dims=[1, 2]),
+        torch.rot90(img_tensor, k=2, dims=[1, 2]),
+        torch.rot90(img_tensor, k=3, dims=[1, 2]),
+        torch.flip(img_tensor, dims=[2]),
     ]
     batch_stack = torch.stack(batch_imgs)
 
-    # 2. Run Inference
     batch_samples = [
-        SegDataSample(metainfo=dict(img_shape=(H, W), ori_shape=(H, W)))
-        for _ in range(len(transforms))
+        SegDataSample(metainfo=dict(img_shape=(h, w), ori_shape=(h, w), pad_shape=(h, w)))
+        for _ in transforms
     ]
 
-    print(f"Running TTA on batch of {len(batch_stack)}...")
     with torch.no_grad():
-        batch_data = dict(
-            inputs=[img for img in batch_stack],
-            data_samples=batch_samples,
-        )
+        batch_data = dict(inputs=[img for img in batch_stack], data_samples=batch_samples)
         results = model.test_step(batch_data)
 
     all_pred_instances = []
 
-    # 3. Inverse Transformations & Collect
     for i, res in enumerate(results):
         transform = transforms[i]
         preds = getattr(res, 'pred_instances', None)
@@ -137,22 +213,18 @@ def apply_tta(model,
         if len(preds) == 0:
             continue
 
-        masks = preds.masks   # (N, H, W)
+        masks = preds.masks
         scores = preds.scores
         labels = preds.labels
         has_normals = hasattr(preds, 'normals')
 
-        # Inverse-transform masks back to original coordinate frame
         if transform == 'id':
             inv_masks = masks
         elif transform == 'rot90':
-            # Applied rot90 CCW → inverse is rot90 CW (k=3)
             inv_masks = torch.rot90(masks, k=3, dims=[1, 2])
         elif transform == 'rot180':
-            # Inverse of rot180 is rot180
             inv_masks = torch.rot90(masks, k=2, dims=[1, 2])
         elif transform == 'rot270':
-            # Applied rot90 CW → inverse is rot90 CCW (k=1)
             inv_masks = torch.rot90(masks, k=1, dims=[1, 2])
         elif transform == 'hflip':
             inv_masks = torch.flip(masks, dims=[2])
@@ -160,82 +232,45 @@ def apply_tta(model,
             inv_masks = masks
 
         for k in range(len(scores)):
-            mask = inv_masks[k].cpu().numpy()
-            score = scores[k].cpu().item()
-            label = labels[k].cpu().item()
-
-            rows = np.any(mask, axis=1)
-            cols = np.any(mask, axis=0)
-            if not np.any(rows) or not np.any(cols):
+            score = float(scores[k].detach().cpu().item())
+            if score < float(min_score):
                 continue
 
-            ymin, ymax = np.where(rows)[0][[0, -1]]
-            xmin, xmax = np.where(cols)[0][[0, -1]]
-            bbox = [xmin, ymin, xmax + 1, ymax + 1]
+            mask = inv_masks[k].detach().cpu().numpy().astype(bool)
+            if int(mask.sum()) == 0:
+                continue
 
+            label = int(labels[k].detach().cpu().item())
             inst = {
-                'bbox': bbox,
                 'mask': mask,
                 'score': score,
                 'label': label,
             }
 
-            # Inverse-transform normals
             if has_normals:
-                # FIX: Original code had uninitialized inst_n for 'id' transform
-                # causing NameError or wrong variable usage on the line below.
-                n = preds.normals[k].cpu().clone()  # (3,)
+                n = preds.normals[k].detach().cpu().numpy().astype(np.float32)
                 nx, ny, nz = float(n[0]), float(n[1]), float(n[2])
-
                 if transform == 'id':
-                    # No transform — vector is already in original frame
                     inv_nx, inv_ny, inv_nz = nx, ny, nz
                 elif transform == 'rot90':
-                    # Image was rotated +90 CCW. In image coords with origin top-left,
-                    # rot90 CCW maps vector (vx,vy) -> (-vy, vx).
-                    # Inverse: rotate -90: (vx,vy) -> (vy, -vx).
                     inv_nx, inv_ny, inv_nz = _rotate_normal_vector(nx, ny, nz, -90)
                 elif transform == 'rot180':
-                    # Inverse of rot180 is rot180: (vx,vy) -> (-vx, -vy)
                     inv_nx, inv_ny, inv_nz = _rotate_normal_vector(nx, ny, nz, 180)
                 elif transform == 'rot270':
-                    # Image was rotated +270 CCW (= -90 CW). Vector: (vx,vy) -> (vy,-vx).
-                    # Inverse: rotate +90: (vx,vy) -> (-vy, vx).
                     inv_nx, inv_ny, inv_nz = _rotate_normal_vector(nx, ny, nz, 90)
                 elif transform == 'hflip':
-                    # Horizontal flip negates x-component of normal
-                    # Inverse is same flip: nx -> -nx, ny unchanged
                     inv_nx, inv_ny, inv_nz = -nx, ny, nz
                 else:
                     inv_nx, inv_ny, inv_nz = nx, ny, nz
+                inst['normal'] = _normalize_normal(np.array([inv_nx, inv_ny, inv_nz], dtype=np.float32))
 
-                # Re-normalize after inverse transform (avoid floating point drift)
-                mag = (inv_nx**2 + inv_ny**2 + inv_nz**2) ** 0.5
-                if mag > 1e-6:
-                    inv_nx /= mag
-                    inv_ny /= mag
-                    inv_nz /= mag
+            all_pred_instances.append(inst)
 
-                inst['normal'] = np.array([inv_nx, inv_ny, inv_nz], dtype=np.float32)
+    if not all_pred_instances:
+        return {'instances': [], 'count': 0}
 
-            if score > 0.1:
-                all_pred_instances.append(inst)
+    final_instances = _cluster_instances(all_pred_instances, iou_threshold=float(merge_iou))
+    if max_instances and max_instances > 0:
+        final_instances = final_instances[: int(max_instances)]
 
-    # 4. Aggregation via NMS
-    if len(all_pred_instances) == 0:
-        return {'instances': []}
-
-    print(f"Aggregating {len(all_pred_instances)} instances from TTA...")
-
-    boxes = torch.tensor(
-        [inst['bbox'] for inst in all_pred_instances], dtype=torch.float32)
-    agg_scores = torch.tensor(
-        [inst['score'] for inst in all_pred_instances], dtype=torch.float32)
-
-    keep_indices = nms(boxes, agg_scores, iou_threshold=0.6)
-    final_instances = [all_pred_instances[i] for i in keep_indices]
-
-    return {
-        'instances': final_instances,
-        'count': len(final_instances),
-    }
+    return {'instances': final_instances, 'count': len(final_instances)}

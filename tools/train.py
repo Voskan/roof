@@ -176,6 +176,79 @@ def _ensure_iou_metric_prefix_and_best_key(cfg: Config) -> str:
     return default_key
 
 
+def _safe_torch_load(path: Path):
+    try:
+        return torch.load(str(path), map_location='cpu', weights_only=False)
+    except TypeError:
+        return torch.load(str(path), map_location='cpu')
+
+
+def _find_last_checkpoint(work_dir: str | Path) -> Path | None:
+    marker = Path(work_dir) / 'last_checkpoint'
+    if not marker.exists():
+        return None
+    raw = marker.read_text(encoding='utf-8').strip()
+    if not raw:
+        return None
+    ckpt_path = Path(raw)
+    if not ckpt_path.is_absolute():
+        ckpt_path = (Path(work_dir) / ckpt_path).resolve()
+    if ckpt_path.exists():
+        return ckpt_path
+    return None
+
+
+def _required_state_prefixes_from_cfg(cfg: Config) -> list[str]:
+    prefixes: list[str] = []
+    model = cfg.get('model', None)
+    if not isinstance(model, dict):
+        return prefixes
+    if model.get('geometry_head', None) is not None:
+        prefixes.append('geometry_head.')
+    if model.get('dense_geometry_head', None) is not None:
+        prefixes.append('dense_geometry_head.')
+    if model.get('edge_head', None) is not None:
+        prefixes.append('edge_head.')
+    return prefixes
+
+
+def _checkpoint_has_required_prefixes(ckpt_path: Path, required_prefixes: list[str]) -> bool:
+    if not required_prefixes:
+        return True
+    try:
+        ckpt_obj = _safe_torch_load(ckpt_path)
+    except Exception:
+        return False
+    if not isinstance(ckpt_obj, dict):
+        return False
+    state_dict = ckpt_obj.get('state_dict', ckpt_obj)
+    if not isinstance(state_dict, dict):
+        return False
+    keys = tuple(state_dict.keys())
+    return all(any(k.startswith(prefix) for k in keys) for prefix in required_prefixes)
+
+
+def _apply_safe_resume_fallback(cfg: Config, resume_requested: bool):
+    if not resume_requested:
+        return
+    work_dir = cfg.get('work_dir', None)
+    if not work_dir:
+        return
+    last_ckpt = _find_last_checkpoint(work_dir)
+    if last_ckpt is None:
+        return
+    required_prefixes = _required_state_prefixes_from_cfg(cfg)
+    if _checkpoint_has_required_prefixes(last_ckpt, required_prefixes):
+        return
+    # Incompatible architecture for full resume: load model weights only.
+    cfg.resume = False
+    cfg.load_from = str(last_ckpt)
+    print(
+        f'[safe-resume] Incompatible last checkpoint: {last_ckpt}. '
+        'Switched to weights-only load_from to avoid optimizer param-group mismatch.'
+    )
+
+
 def main():
     args = parse_args()
 
@@ -225,6 +298,7 @@ def main():
         cfg.train_dataloader.dataset.hard_examples_file = args.hard_examples_file
         cfg.train_dataloader.dataset.hard_example_repeat = max(int(args.hard_example_repeat), 1)
     apply_runtime_compat(cfg)
+    _apply_safe_resume_fallback(cfg, resume_requested=args.resume)
     
     save_best_key = _ensure_iou_metric_prefix_and_best_key(cfg)
 

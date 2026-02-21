@@ -309,6 +309,11 @@ train_cfg = dict(type='IterBasedTrainLoop', max_iters=100000, val_interval=5000)
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')
 default_hooks = dict(
+    logger=dict(
+        type='LoggerHook',
+        interval=10,
+        log_metric_by_epoch=False,
+    ),
     checkpoint=dict(
         type='CheckpointHook',
         by_epoch=False,
@@ -317,3 +322,5 @@ default_hooks = dict(
         save_best='mIoU',
     )
 )
+log_processor = dict(by_epoch=False, window_size=10)
+log_level = 'INFO'

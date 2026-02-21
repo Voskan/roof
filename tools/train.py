@@ -176,6 +176,22 @@ def _ensure_iou_metric_prefix_and_best_key(cfg: Config) -> str:
     return default_key
 
 
+def _ensure_visible_logging(cfg: Config):
+    cfg.log_level = 'INFO'
+    cfg.log_processor = dict(by_epoch=False, window_size=10)
+    cfg.setdefault('default_hooks', {})
+    logger_hook = cfg.default_hooks.get('logger', None)
+    if logger_hook is None:
+        cfg.default_hooks.logger = dict(
+            type='LoggerHook',
+            interval=10,
+            log_metric_by_epoch=False,
+        )
+        return
+    logger_hook['interval'] = 10
+    logger_hook['log_metric_by_epoch'] = False
+
+
 def _safe_torch_load(path: Path):
     try:
         return torch.load(str(path), map_location='cpu', weights_only=False)
@@ -300,6 +316,7 @@ def main():
         cfg.train_dataloader.dataset.hard_examples_file = args.hard_examples_file
         cfg.train_dataloader.dataset.hard_example_repeat = max(int(args.hard_example_repeat), 1)
     apply_runtime_compat(cfg)
+    _ensure_visible_logging(cfg)
     _apply_safe_resume_fallback(cfg, resume_requested=args.resume)
     
     save_best_key = _ensure_iou_metric_prefix_and_best_key(cfg)

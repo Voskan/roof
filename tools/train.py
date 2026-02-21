@@ -148,6 +148,34 @@ def _dump_resolved_cfg(cfg: Config):
         pass
 
 
+def _ensure_iou_metric_prefix_and_best_key(cfg: Config) -> str:
+    """Ensure IoUMetric has explicit prefix and return save_best key."""
+    default_key = 'mIoU'
+    val_evaluator = cfg.get('val_evaluator', None)
+    if val_evaluator is None:
+        return default_key
+
+    metric_cfgs = []
+    if isinstance(val_evaluator, dict):
+        metric_cfgs = [val_evaluator]
+    elif isinstance(val_evaluator, (list, tuple)):
+        metric_cfgs = [m for m in val_evaluator if isinstance(m, dict)]
+
+    for metric in metric_cfgs:
+        metric_type = metric.get('type', '')
+        if metric_type != 'IoUMetric':
+            continue
+        # Suppress mmengine warning and keep metric name stable by default.
+        if metric.get('prefix', None) is None:
+            metric['prefix'] = ''
+        prefix = metric.get('prefix', '')
+        if not prefix:
+            return default_key
+        return f'{prefix}/mIoU'
+
+    return default_key
+
+
 def main():
     args = parse_args()
 
@@ -161,6 +189,8 @@ def main():
     import deeproof.models.deeproof_model
     import deeproof.models.heads.mask2former_head
     import deeproof.models.heads.geometry_head
+    import deeproof.models.heads.dense_normal_head
+    import deeproof.models.heads.edge_head
     import deeproof.models.losses
     import deeproof.datasets.roof_dataset
 
@@ -196,11 +226,13 @@ def main():
         cfg.train_dataloader.dataset.hard_example_repeat = max(int(args.hard_example_repeat), 1)
     apply_runtime_compat(cfg)
     
+    save_best_key = _ensure_iou_metric_prefix_and_best_key(cfg)
+
     # Checkpoint Configuration (Best IoU)
     # Ensure default_hooks.checkpoint exists and configure it
     # We want to save the best model based on mIoU
     if 'default_hooks' in cfg and 'checkpoint' in cfg.default_hooks:
-        cfg.default_hooks.checkpoint.save_best = 'mIoU'
+        cfg.default_hooks.checkpoint.save_best = save_best_key
         cfg.default_hooks.checkpoint.rule = 'greater'
         cfg.default_hooks.checkpoint.max_keep_ckpts = 3
     else:
@@ -209,7 +241,7 @@ def main():
         cfg.default_hooks['checkpoint'] = dict(
             type='CheckpointHook',
             interval=1,
-            save_best='mIoU',
+            save_best=save_best_key,
             rule='greater',
             max_keep_ckpts=3
         )

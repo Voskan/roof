@@ -82,6 +82,10 @@ def parse_args():
     parser.add_argument('--max_instances', type=int, default=0, help='Max instances to keep (0 disables cap)')
     parser.add_argument('--tta_min_score', type=float, default=0.10, help='Min score inside TTA before merge')
     parser.add_argument('--tta_merge_iou', type=float, default=0.60, help='Mask IoU threshold for TTA fusion')
+    parser.add_argument(
+        '--allow-semantic-fallback',
+        action='store_true',
+        help='Allow semantic-to-instance fallback when pred_instances are unavailable (off by default).')
     parser.add_argument('--tile_merge_iou', type=float, default=0.50, help='Mask IoU threshold for tile merging')
     parser.add_argument('--sr-enable', action='store_true', help='Enable SR dual-branch inference')
     parser.add_argument('--sr-scale', type=float, default=2.0, help='SR upscale factor')
@@ -481,6 +485,7 @@ def run_production_inference():
                 min_score=float(args.tta_min_score),
                 merge_iou=float(args.tta_merge_iou),
                 max_instances=int(args.max_instances),
+                allow_semantic_fallback=bool(args.allow_semantic_fallback),
             )
             instances = result.get('instances', [])
             if padded_sr is not None:
@@ -492,6 +497,7 @@ def run_production_inference():
                     min_score=float(args.tta_min_score),
                     merge_iou=float(args.tta_merge_iou),
                     max_instances=int(args.max_instances),
+                    allow_semantic_fallback=bool(args.allow_semantic_fallback),
                 )
                 sr_instances = sr_result.get('instances', [])
                 if sr_instances:

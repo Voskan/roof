@@ -29,7 +29,9 @@ def _instances_from_semantic(sem_map: torch.Tensor, min_area: int = 64) -> Insta
                 continue
             masks.append(torch.from_numpy(comp).to(device=device))
             labels.append(cls_id)
-            scores.append(1.0)
+            # Keep semantic fallback confidence low; query-based instances
+            # should dominate whenever available.
+            scores.append(0.05)
 
     out = InstanceData()
     if masks:
@@ -163,6 +165,7 @@ def apply_tta(
     min_score: float = 0.1,
     merge_iou: float = 0.6,
     max_instances: int = 0,
+    allow_semantic_fallback: bool = False,
 ) -> dict:
     """
     Apply TTA and aggregate predictions by mask-level fusion.
@@ -203,6 +206,8 @@ def apply_tta(
         transform = transforms[i]
         preds = getattr(res, 'pred_instances', None)
         if preds is None or len(preds) == 0:
+            if not allow_semantic_fallback:
+                continue
             sem = getattr(res, 'pred_sem_seg', None)
             sem_data = getattr(sem, 'data', None) if sem is not None else None
             if torch.is_tensor(sem_data):

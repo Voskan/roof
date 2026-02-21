@@ -1,5 +1,5 @@
 import inspect
-from typing import Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple, List
 import numpy as np
 import torch
 import torch.nn as nn
@@ -234,7 +234,9 @@ class DeepRoofMask2Former(Mask2FormerBase):
             if cv2 is None:
                 masks.append(cls_mask.bool())
                 labels.append(cls_id)
-                scores.append(1.0)
+                # Keep fallback confidence low to avoid overwhelming true
+                # query-based instances when semantic-only fallback is used.
+                scores.append(0.05)
                 continue
 
             comp_map = cls_mask.detach().cpu().numpy().astype(np.uint8)
@@ -245,7 +247,7 @@ class DeepRoofMask2Former(Mask2FormerBase):
                     continue
                 masks.append(torch.from_numpy(comp).to(device=device))
                 labels.append(cls_id)
-                scores.append(1.0)
+                scores.append(0.05)
 
         pred_instances = InstanceData()
         if masks:
@@ -257,6 +259,134 @@ class DeepRoofMask2Former(Mask2FormerBase):
             pred_instances.labels = torch.zeros((0,), dtype=torch.long, device=device)
             pred_instances.scores = torch.zeros((0,), dtype=torch.float32, device=device)
         return pred_instances
+
+    @staticmethod
+    def _instances_from_queries(
+        all_cls_scores: Any,
+        all_mask_preds: Any,
+        sample_index: int,
+        out_hw: Tuple[int, int],
+        num_classes: int,
+        score_thr: float = 0.05,
+        min_area: int = 64,
+        max_instances: int = 200,
+    ) -> InstanceData:
+        """Build instance predictions directly from query cls/mask outputs."""
+        device = None
+        cls_scores = all_cls_scores
+        mask_preds = all_mask_preds
+
+        if isinstance(cls_scores, (list, tuple)):
+            cls_scores = cls_scores[-1] if len(cls_scores) > 0 else None
+        if isinstance(mask_preds, (list, tuple)):
+            mask_preds = mask_preds[-1] if len(mask_preds) > 0 else None
+
+        if not torch.is_tensor(cls_scores) or not torch.is_tensor(mask_preds):
+            out = InstanceData()
+            h, w = int(out_hw[0]), int(out_hw[1])
+            out.masks = torch.zeros((0, h, w), dtype=torch.bool)
+            out.labels = torch.zeros((0,), dtype=torch.long)
+            out.scores = torch.zeros((0,), dtype=torch.float32)
+            out.query_indices = torch.zeros((0,), dtype=torch.long)
+            return out
+
+        if cls_scores.ndim == 4:
+            cls_scores = cls_scores[-1]
+        if mask_preds.ndim == 5:
+            mask_preds = mask_preds[-1]
+        if cls_scores.ndim != 3 or mask_preds.ndim != 4:
+            out = InstanceData()
+            h, w = int(out_hw[0]), int(out_hw[1])
+            out.masks = torch.zeros((0, h, w), dtype=torch.bool, device=cls_scores.device)
+            out.labels = torch.zeros((0,), dtype=torch.long, device=cls_scores.device)
+            out.scores = torch.zeros((0,), dtype=torch.float32, device=cls_scores.device)
+            out.query_indices = torch.zeros((0,), dtype=torch.long, device=cls_scores.device)
+            return out
+
+        bsz = int(cls_scores.shape[0])
+        if sample_index < 0 or sample_index >= bsz:
+            out = InstanceData()
+            h, w = int(out_hw[0]), int(out_hw[1])
+            out.masks = torch.zeros((0, h, w), dtype=torch.bool, device=cls_scores.device)
+            out.labels = torch.zeros((0,), dtype=torch.long, device=cls_scores.device)
+            out.scores = torch.zeros((0,), dtype=torch.float32, device=cls_scores.device)
+            out.query_indices = torch.zeros((0,), dtype=torch.long, device=cls_scores.device)
+            return out
+
+        cls_logits = cls_scores[sample_index]   # [Q, C]
+        mask_logits = mask_preds[sample_index]  # [Q, Hm, Wm]
+        device = cls_logits.device
+
+        target_h, target_w = int(out_hw[0]), int(out_hw[1])
+        if tuple(mask_logits.shape[-2:]) != (target_h, target_w):
+            mask_logits = F.interpolate(
+                mask_logits.unsqueeze(1),
+                size=(target_h, target_w),
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(1)
+
+        probs = F.softmax(cls_logits, dim=-1)
+        total_cls_dim = int(probs.shape[-1])
+        # Config uses num_classes foreground/background + no-object as extra logit.
+        if total_cls_dim > int(num_classes):
+            probs = probs[:, : int(num_classes)]
+
+        if int(num_classes) <= 1 or probs.shape[-1] <= 1:
+            out = InstanceData()
+            out.masks = torch.zeros((0, target_h, target_w), dtype=torch.bool, device=device)
+            out.labels = torch.zeros((0,), dtype=torch.long, device=device)
+            out.scores = torch.zeros((0,), dtype=torch.float32, device=device)
+            out.query_indices = torch.zeros((0,), dtype=torch.long, device=device)
+            return out
+
+        # Exclude class_id=0 (background) from instance generation.
+        fg_probs = probs[:, 1:]
+        top_scores, top_labels_rel = fg_probs.max(dim=-1)
+        top_labels = top_labels_rel + 1
+
+        mask_probs = torch.sigmoid(mask_logits)
+        order = torch.argsort(top_scores, descending=True)
+
+        keep_masks: List[torch.Tensor] = []
+        keep_labels: List[torch.Tensor] = []
+        keep_scores: List[torch.Tensor] = []
+        keep_query_idx: List[torch.Tensor] = []
+
+        for q_idx in order.tolist():
+            cls_score = float(top_scores[q_idx].item())
+            if cls_score < float(score_thr):
+                continue
+            q_mask_prob = mask_probs[q_idx]
+            q_mask = q_mask_prob >= 0.5
+            area = int(q_mask.sum().item())
+            if area < int(min_area):
+                continue
+            # Couple classification confidence with mask confidence.
+            mask_conf = float(q_mask_prob[q_mask].mean().item()) if area > 0 else 0.0
+            final_score = cls_score * mask_conf
+            if final_score < float(score_thr):
+                continue
+
+            keep_masks.append(q_mask.bool())
+            keep_labels.append(top_labels[q_idx].long())
+            keep_scores.append(torch.tensor(final_score, dtype=torch.float32, device=device))
+            keep_query_idx.append(torch.tensor(q_idx, dtype=torch.long, device=device))
+            if int(max_instances) > 0 and len(keep_masks) >= int(max_instances):
+                break
+
+        out = InstanceData()
+        if keep_masks:
+            out.masks = torch.stack(keep_masks, dim=0)
+            out.labels = torch.stack(keep_labels, dim=0)
+            out.scores = torch.stack(keep_scores, dim=0)
+            out.query_indices = torch.stack(keep_query_idx, dim=0)
+        else:
+            out.masks = torch.zeros((0, target_h, target_w), dtype=torch.bool, device=device)
+            out.labels = torch.zeros((0,), dtype=torch.long, device=device)
+            out.scores = torch.zeros((0,), dtype=torch.float32, device=device)
+            out.query_indices = torch.zeros((0,), dtype=torch.long, device=device)
+        return out
 
     def _prepare_gt_instances_for_assigner(
         self,
@@ -870,6 +1000,7 @@ class DeepRoofMask2Former(Mask2FormerBase):
         need_aux_maps = (self.dense_geometry_head is not None) or (self.edge_head is not None)
         aux_dense = None
         aux_edge = None
+        decode_feats = None
 
         # Reset cache
         if hasattr(self.decode_head, 'last_query_embeddings'):
@@ -880,6 +1011,7 @@ class DeepRoofMask2Former(Mask2FormerBase):
         if need_aux_maps:
             with torch.no_grad():
                 aux_feats = self.extract_feat(inputs)
+                decode_feats = aux_feats
                 if self.dense_geometry_head is not None:
                     aux_dense = self.dense_geometry_head(
                         aux_feats,
@@ -891,16 +1023,42 @@ class DeepRoofMask2Former(Mask2FormerBase):
 
         results = super().predict(inputs, data_samples)
 
-        # Build instance predictions from semantic map if model returned semantic-only output
-        for sample in results:
+        # If runtime returned semantic-only output, recover query-based instances
+        # directly from decode head logits/masks instead of semantic CC fallback.
+        missing_indices: List[int] = []
+        for i, sample in enumerate(results):
             pred_instances = getattr(sample, 'pred_instances', None)
             has_instances = pred_instances is not None and len(pred_instances) > 0
-            if has_instances:
-                continue
-            pred_sem = getattr(sample, 'pred_sem_seg', None)
-            sem_data = getattr(pred_sem, 'data', None) if pred_sem is not None else None
-            if torch.is_tensor(sem_data):
-                sample.pred_instances = self._instances_from_semantic(sem_data)
+            if not has_instances:
+                missing_indices.append(i)
+
+        if missing_indices:
+            with torch.no_grad():
+                if decode_feats is None:
+                    decode_feats = self.extract_feat(inputs)
+                all_cls_scores, all_mask_preds = self.decode_head(decode_feats, data_samples)
+
+            out_hw = (int(inputs.shape[-2]), int(inputs.shape[-1]))
+            num_classes = int(getattr(self.decode_head, 'num_classes', 3))
+            for i in missing_indices:
+                recovered = self._instances_from_queries(
+                    all_cls_scores=all_cls_scores,
+                    all_mask_preds=all_mask_preds,
+                    sample_index=i,
+                    out_hw=out_hw,
+                    num_classes=num_classes,
+                    score_thr=0.05,
+                    min_area=64,
+                    max_instances=300,
+                )
+                if len(recovered) > 0:
+                    results[i].pred_instances = recovered
+                    continue
+                # Last-resort fallback (kept low-confidence by design).
+                pred_sem = getattr(results[i], 'pred_sem_seg', None)
+                sem_data = getattr(pred_sem, 'data', None) if pred_sem is not None else None
+                if torch.is_tensor(sem_data):
+                    results[i].pred_instances = self._instances_from_semantic(sem_data)
 
         # Attach geometry predictions using cached query embeddings
         query_cache = getattr(self.decode_head, 'last_query_embeddings', None)
@@ -922,6 +1080,18 @@ class DeepRoofMask2Former(Mask2FormerBase):
                 insts = results[i].pred_instances
                 if len(insts) > 0:
                     pred_normals = geo_preds[i]
+                    query_indices = getattr(insts, 'query_indices', None)
+                    if torch.is_tensor(query_indices) and query_indices.numel() > 0:
+                        if pred_normals.shape[0] == 0:
+                            insts.normals = torch.zeros(
+                                (len(insts), 3),
+                                dtype=geo_preds.dtype,
+                                device=geo_preds.device)
+                            continue
+                        idx = query_indices.to(device=pred_normals.device, dtype=torch.long)
+                        idx = torch.clamp(idx, min=0, max=max(int(pred_normals.shape[0]) - 1, 0))
+                        insts.normals = pred_normals[idx]
+                        continue
                     if pred_normals.shape[0] < len(insts):
                         if pred_normals.shape[0] == 0:
                             pad = torch.zeros(

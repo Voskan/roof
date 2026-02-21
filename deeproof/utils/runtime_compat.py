@@ -56,4 +56,19 @@ def apply_runtime_compat(cfg):
             if 'min_lr' in scheduler and 'eta_min' not in scheduler:
                 scheduler['eta_min'] = scheduler.pop('min_lr')
 
+    def _ensure_iou_prefix(evaluator_cfg: Any):
+        if evaluator_cfg is None:
+            return
+        if isinstance(evaluator_cfg, dict):
+            if evaluator_cfg.get('type') == 'IoUMetric' and evaluator_cfg.get('prefix', None) is None:
+                evaluator_cfg['prefix'] = ''
+            return
+        if isinstance(evaluator_cfg, (list, tuple)):
+            for metric in evaluator_cfg:
+                if isinstance(metric, dict) and metric.get('type') == 'IoUMetric' and metric.get('prefix', None) is None:
+                    metric['prefix'] = ''
+
+    _ensure_iou_prefix(cfg.get('val_evaluator', None))
+    _ensure_iou_prefix(cfg.get('test_evaluator', None))
+
     return cfg

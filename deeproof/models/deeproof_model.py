@@ -48,6 +48,8 @@ class DeepRoofMask2Former(Mask2FormerBase):
                  geometry_head: dict,
                  geometry_loss: Optional[dict] = None,
                  geometry_loss_weight: float = 2.0,
+                 geometry_fallback_mask_size: int = 64,
+                 max_geometry_fallback_assign_elems: int = 50_000_000,
                  topology_loss_weight: float = 0.0,
                  dense_geometry_head: Optional[dict] = None,
                  dense_normal_loss: Optional[dict] = None,
@@ -104,6 +106,9 @@ class DeepRoofMask2Former(Mask2FormerBase):
         else:
             self.sam_distill_loss = None
         self.sam_distill_weight = float(sam_distill_weight)
+        self._warned_missing_assign_cache = False
+        self.geometry_fallback_mask_size = max(int(geometry_fallback_mask_size), 16)
+        self.max_geometry_fallback_assign_elems = max(int(max_geometry_fallback_assign_elems), 1_000_000)
 
     @staticmethod
     def _normalize_test_cfg(test_cfg):
@@ -504,22 +509,49 @@ class DeepRoofMask2Former(Mask2FormerBase):
             if cached_assigns is not None and i < len(cached_assigns):
                 assign_result = cached_assigns[i]
 
-            # If not cached, run matching once (single, not double)
+            # Do not run an expensive full-mask fallback assignment here.
+            # Fallback would compute cost over [Q x N x H x W] and can stall training.
             if assign_result is None:
-                pred_instances = InstanceData()
-                pred_instances.scores = img_cls_pred
-                pred_instances.masks = img_mask_pred
-                gt_instances_for_assign = self._prepare_gt_instances_for_assigner(
-                    gt_instances=gt_instances,
-                    pred_mask_shape=img_mask_pred.shape,
-                    device=device,
-                )
-                try:
-                    assign_result = self.decode_head.assigner.assign(
-                        pred_instances, gt_instances_for_assign, img_meta=img_meta)
-                except TypeError:
-                    assign_result = self.decode_head.assigner.assign(
-                        pred_instances, gt_instances_for_assign, img_meta)
+                # Safe fallback: only when complexity is small enough.
+                num_q = int(img_mask_pred.shape[0])
+                h_pred, w_pred = int(img_mask_pred.shape[-2]), int(img_mask_pred.shape[-1])
+                num_gt = int(len(gt_instances))
+                complexity = num_q * max(num_gt, 1) * h_pred * w_pred
+                if complexity <= int(self.max_geometry_fallback_assign_elems):
+                    small_h = min(h_pred, int(self.geometry_fallback_mask_size))
+                    small_w = min(w_pred, int(self.geometry_fallback_mask_size))
+                    small_mask_pred = img_mask_pred
+                    if (small_h, small_w) != (h_pred, w_pred):
+                        small_mask_pred = F.interpolate(
+                            img_mask_pred.unsqueeze(1),
+                            size=(small_h, small_w),
+                            mode='bilinear',
+                            align_corners=False,
+                        ).squeeze(1)
+
+                    pred_instances = InstanceData()
+                    pred_instances.scores = img_cls_pred
+                    pred_instances.masks = small_mask_pred
+                    gt_instances_for_assign = self._prepare_gt_instances_for_assigner(
+                        gt_instances=gt_instances,
+                        pred_mask_shape=small_mask_pred.shape,
+                        device=device,
+                    )
+                    try:
+                        assign_result = self.decode_head.assigner.assign(
+                            pred_instances, gt_instances_for_assign, img_meta=img_meta)
+                    except TypeError:
+                        assign_result = self.decode_head.assigner.assign(
+                            pred_instances, gt_instances_for_assign, img_meta)
+                else:
+                    if not self._warned_missing_assign_cache:
+                        print(
+                            '[DeepRoofGeometry] WARNING: missing cached Hungarian assignments '
+                            'from decode head; skipping geometry loss this iteration to avoid '
+                            'slow fallback matching.',
+                            flush=True)
+                        self._warned_missing_assign_cache = True
+                    continue
 
             # Extract positive matches
             pos_inds = torch.nonzero(assign_result.gt_inds > 0, as_tuple=False).squeeze(-1)

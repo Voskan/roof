@@ -340,24 +340,78 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
         Compatibility wrapper. Also captures per-image Hungarian assign results
         so DeepRoofMask2Former.loss() can reuse them without a second matching.
         """
-        if len(args) == 1 and not kwargs:
-            data_samples = args[0]
-            if isinstance(data_samples, list) and (
-                len(data_samples) == 0 or hasattr(data_samples[0], 'gt_instances')
-            ):
-                batch_gt_instances = [s.gt_instances for s in data_samples]
-                batch_img_metas = [s.metainfo for s in data_samples]
-                losses = super().loss_by_feat(
-                    all_cls_scores,
-                    all_mask_preds,
-                    batch_gt_instances,
-                    batch_img_metas,
-                )
-                self._try_capture_assign_results()
-                return losses
+        # Reset per-call cache and robustly capture assign() results even if
+        # assigner implementation does not expose `last_assign_results`.
+        self.last_assign_results = None
 
-        losses = super().loss_by_feat(all_cls_scores, all_mask_preds, *args, **kwargs)
-        self._try_capture_assign_results()
+        def _infer_num_imgs() -> int:
+            if len(args) == 1 and not kwargs:
+                data_samples = args[0]
+                if isinstance(data_samples, list):
+                    return len(data_samples)
+            if len(args) >= 1 and isinstance(args[0], list):
+                return len(args[0])
+            return 0
+
+        num_imgs = _infer_num_imgs()
+        assigner = getattr(self, 'assigner', None)
+        if assigner is None or not hasattr(assigner, 'assign'):
+            if len(args) == 1 and not kwargs:
+                data_samples = args[0]
+                if isinstance(data_samples, list) and (
+                    len(data_samples) == 0 or hasattr(data_samples[0], 'gt_instances')
+                ):
+                    batch_gt_instances = [s.gt_instances for s in data_samples]
+                    batch_img_metas = [s.metainfo for s in data_samples]
+                    losses = super().loss_by_feat(
+                        all_cls_scores,
+                        all_mask_preds,
+                        batch_gt_instances,
+                        batch_img_metas,
+                    )
+                    self._try_capture_assign_results()
+                    return losses
+            losses = super().loss_by_feat(all_cls_scores, all_mask_preds, *args, **kwargs)
+            self._try_capture_assign_results()
+            return losses
+
+        captured_assigns: List[Any] = []
+        original_assign = assigner.assign
+
+        def _wrapped_assign(*a, **k):
+            out = original_assign(*a, **k)
+            captured_assigns.append(out)
+            return out
+
+        assigner.assign = _wrapped_assign
+        try:
+            if len(args) == 1 and not kwargs:
+                data_samples = args[0]
+                if isinstance(data_samples, list) and (
+                    len(data_samples) == 0 or hasattr(data_samples[0], 'gt_instances')
+                ):
+                    batch_gt_instances = [s.gt_instances for s in data_samples]
+                    batch_img_metas = [s.metainfo for s in data_samples]
+                    losses = super().loss_by_feat(
+                        all_cls_scores,
+                        all_mask_preds,
+                        batch_gt_instances,
+                        batch_img_metas,
+                    )
+                else:
+                    losses = super().loss_by_feat(all_cls_scores, all_mask_preds, *args, **kwargs)
+            else:
+                losses = super().loss_by_feat(all_cls_scores, all_mask_preds, *args, **kwargs)
+        finally:
+            assigner.assign = original_assign
+
+        if captured_assigns:
+            if num_imgs > 0 and len(captured_assigns) >= num_imgs:
+                self.last_assign_results = captured_assigns[-num_imgs:]
+            else:
+                self.last_assign_results = captured_assigns
+        else:
+            self._try_capture_assign_results()
         return losses
 
     def _try_capture_assign_results(self):

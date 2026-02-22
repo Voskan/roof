@@ -951,7 +951,12 @@ class DeepRoofMask2Former(Mask2FormerBase):
         losses['loss_geometry'] = geo_loss
 
         # E. Dense normal branch (optional)
-        if self.dense_geometry_head is not None:
+        # Skip branch entirely when both related loss weights are disabled.
+        use_dense_branch = (
+            self.dense_geometry_head is not None
+            and (self.dense_geometry_loss_weight > 0.0 or self.piecewise_planar_loss_weight > 0.0)
+        )
+        if use_dense_branch:
             pred_dense_normals = self.dense_geometry_head(
                 x, output_size=(int(inputs.shape[-2]), int(inputs.shape[-1])))
             losses['loss_dense_normal'] = self._compute_dense_geometry_loss(
@@ -966,7 +971,8 @@ class DeepRoofMask2Former(Mask2FormerBase):
             )
 
         # F. Edge branch (optional)
-        if self.edge_head is not None:
+        use_edge_branch = self.edge_head is not None and self.edge_loss_weight > 0.0
+        if use_edge_branch:
             edge_logits = self.edge_head(
                 x, output_size=(int(inputs.shape[-2]), int(inputs.shape[-1])))
             losses['loss_edge'] = self._compute_edge_loss(
@@ -976,19 +982,21 @@ class DeepRoofMask2Former(Mask2FormerBase):
             )
 
         # G. SAM distillation (optional)
-        losses['loss_sam_distill'] = self._compute_sam_distill_loss(
-            all_cls_scores=all_cls_scores,
-            all_mask_preds=all_mask_preds,
-            data_samples=data_samples,
-            device=inputs.device,
-        )
+        if self.sam_distill_weight > 0.0 and self.sam_distill_loss is not None:
+            losses['loss_sam_distill'] = self._compute_sam_distill_loss(
+                all_cls_scores=all_cls_scores,
+                all_mask_preds=all_mask_preds,
+                data_samples=data_samples,
+                device=inputs.device,
+            )
 
         # H. Topology regularization on matched foreground masks
-        losses['loss_topology'] = self._compute_topology_regularization(
-            all_mask_preds=all_mask_preds,
-            data_samples=data_samples,
-            device=inputs.device,
-        )
+        if self.topology_loss_weight > 0.0:
+            losses['loss_topology'] = self._compute_topology_regularization(
+                all_mask_preds=all_mask_preds,
+                data_samples=data_samples,
+                device=inputs.device,
+            )
 
         return losses
 

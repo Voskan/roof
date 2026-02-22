@@ -34,6 +34,8 @@ class DeepRoofDataset(BaseSegDataset):
                  normal_suffix: str = '.npy',
                  sam_map_suffix: str = '.png',
                  slope_threshold_deg: float = 2.0,
+                 min_instance_area_px: int = 16,
+                 max_instances_per_image: int = 128,
                  hard_examples_file: Optional[str] = None,
                  hard_example_repeat: int = 1,
                  sr_dual_prob: float = 0.0,
@@ -48,6 +50,8 @@ class DeepRoofDataset(BaseSegDataset):
         self.normal_suffix = normal_suffix
         self.sam_map_suffix = sam_map_suffix
         self.slope_threshold_deg = float(slope_threshold_deg)
+        self.min_instance_area_px = max(int(min_instance_area_px), 1)
+        self.max_instances_per_image = max(int(max_instances_per_image), 1)
         self.hard_examples_file = hard_examples_file
         self.hard_example_repeat = max(int(hard_example_repeat), 1)
         self.sr_dual_prob = float(np.clip(sr_dual_prob, 0.0, 1.0))
@@ -321,10 +325,27 @@ class DeepRoofDataset(BaseSegDataset):
             data_sample.gt_sam_seg = _safe_pixel_data(sam_tensor)
 
         gt_instances = InstanceData()
-        inst_ids = torch.unique(inst_map)
+        inst_ids, inst_areas = torch.unique(inst_map, return_counts=True)
         # Instance supervision should contain object instances only.
         # Background is learned from unmatched/no-object queries and semantic targets.
-        inst_ids = inst_ids[inst_ids > 0]
+        keep_fg = inst_ids > 0
+        inst_ids = inst_ids[keep_fg]
+        inst_areas = inst_areas[keep_fg]
+        # Defensive filtering: noisy masks can contain a huge amount of tiny IDs,
+        # which makes first batch extremely slow and unstable for Hungarian matching.
+        min_inst_area = int(getattr(self, 'min_instance_area_px', 16))
+        max_inst_per_image = int(getattr(self, 'max_instances_per_image', 128))
+        if inst_ids.numel() > 0 and min_inst_area > 1:
+            keep_area = inst_areas >= min_inst_area
+            inst_ids = inst_ids[keep_area]
+            inst_areas = inst_areas[keep_area]
+        if inst_ids.numel() > max_inst_per_image:
+            topk = torch.topk(
+                inst_areas,
+                k=max_inst_per_image,
+                largest=True,
+                sorted=False).indices
+            inst_ids = inst_ids[topk]
 
         if inst_ids.numel() > 0:
             masks = torch.stack([(inst_map == i) for i in inst_ids], dim=0).bool()

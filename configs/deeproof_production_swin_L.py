@@ -203,6 +203,8 @@ train_dataloader = dict(
         seg_map_suffix='.png',
         normal_suffix='.npy',
         slope_threshold_deg=2.0,
+        min_instance_area_px=16,
+        max_instances_per_image=128,
         sr_dual_prob=0.25,
         sr_scale=2.0,
         image_size=(1024, 1024),
@@ -252,6 +254,8 @@ val_dataloader = dict(
         seg_map_suffix='.png',
         normal_suffix='.npy',
         slope_threshold_deg=2.0,
+        min_instance_area_px=16,
+        max_instances_per_image=128,
         image_size=(1024, 1024),
         pipeline=val_pipeline
     )

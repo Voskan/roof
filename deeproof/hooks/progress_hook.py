@@ -28,6 +28,11 @@ class DeepRoofProgressHook(Hook):
         self._runner = None
         self._last_iter_seen = -1
         self._dataloader_warned = False
+        self._ever_seen_before_train_iter = False
+        self._in_train_iter = False
+        self._active_iter = -1
+        self._iter_start_time = None
+        self._iter_warned = False
 
     @staticmethod
     def _max_iters(runner) -> int:
@@ -69,12 +74,29 @@ class DeepRoofProgressHook(Hook):
             cur = int(getattr(train_loop, '_iter', 0)) if train_loop is not None else 0
             max_iters = self._max_iters(runner)
             elapsed = 0.0 if self._start_time is None else (time.time() - self._start_time)
-            if cur <= self._last_iter_seen:
+            in_iter = self._in_train_iter and self._active_iter == cur
+            if in_iter:
+                iter_elapsed = 0.0 if self._iter_start_time is None else (time.time() - self._iter_start_time)
+                self._emit(
+                    f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
+                    f'elapsed={elapsed:.1f}s | running_train_step=1 | step_elapsed={iter_elapsed:.1f}s'
+                )
+                if (not self._iter_warned) and cur == 0 and iter_elapsed >= float(self.dataloader_warn_sec):
+                    self._emit(
+                        '[DeepRoofProgress] WARNING: first train step is taking too long. '
+                        'Data is already loaded; bottleneck is likely model compute/memory. '
+                        'Try lower batch size / image size, and check GPU memory.'
+                    )
+                    self._iter_warned = True
+            elif cur <= self._last_iter_seen:
                 self._emit(
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
                     f'elapsed={elapsed:.1f}s | waiting_next_batch=1'
                 )
-                if (not self._dataloader_warned) and cur == 0 and elapsed >= float(self.dataloader_warn_sec):
+                if ((not self._dataloader_warned)
+                        and (not self._ever_seen_before_train_iter)
+                        and cur == 0
+                        and elapsed >= float(self.dataloader_warn_sec)):
                     self._emit(
                         '[DeepRoofProgress] WARNING: first batch is still not ready. '
                         'Likely dataloader stall (workers/path/augmentation). '
@@ -105,8 +127,22 @@ class DeepRoofProgressHook(Hook):
             f'lr={self._format_lr(runner)}'
         )
         self._dataloader_warned = False
+        self._ever_seen_before_train_iter = False
+        self._in_train_iter = False
+        self._active_iter = -1
+        self._iter_start_time = None
+        self._iter_warned = False
+
+    def before_train_iter(self, runner, batch_idx: int, data_batch=None):
+        self._ever_seen_before_train_iter = True
+        self._in_train_iter = True
+        self._active_iter = int(batch_idx)
+        self._iter_start_time = time.time()
 
     def after_train_iter(self, runner, batch_idx: int, data_batch=None, outputs=None):
+        self._in_train_iter = False
+        self._active_iter = -1
+        self._iter_start_time = None
         cur_iter = int(batch_idx) + 1
         if cur_iter != 1 and (cur_iter % self.interval) != 0:
             return

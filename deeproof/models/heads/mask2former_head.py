@@ -275,7 +275,13 @@ class DeepRoofMask2FormerHead(Mask2FormerHead):
         else:
             all_cls_scores, all_mask_preds = out, []
 
-        self.last_cls_scores = all_cls_scores
+        # Keeping train-time cls score tensors as attributes can retain parts of
+        # the autograd graph across iterations and inflate memory. We only need
+        # this cache during inference fallback.
+        if self.training:
+            self.last_cls_scores = None
+        else:
+            self.last_cls_scores = all_cls_scores
         self.last_assign_results = None
 
         # --- Primary source: forward hook captured real decoder layer output ---

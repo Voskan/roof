@@ -1030,6 +1030,17 @@ class DeepRoofMask2Former(Mask2FormerBase):
                 device=inputs.device,
             )
 
+        # Release decode-head caches as early as possible in training to avoid
+        # holding large tensors longer than needed.
+        if hasattr(self.decode_head, 'last_query_embeddings'):
+            self.decode_head.last_query_embeddings = None
+        if hasattr(self.decode_head, 'last_cls_scores'):
+            self.decode_head.last_cls_scores = None
+        if hasattr(self.decode_head, 'last_assign_results'):
+            self.decode_head.last_assign_results = None
+        if hasattr(self.decode_head, '_hooked_decoder_output'):
+            self.decode_head._hooked_decoder_output = None
+
         return losses
 
     def predict(self, inputs: torch.Tensor, data_samples: List[SegDataSample]) -> List[SegDataSample]:

@@ -54,9 +54,14 @@ class DeepRoofProgressHook(Hook):
         try:
             dev = torch.cuda.current_device()
             total = float(torch.cuda.get_device_properties(dev).total_memory)
+            alloc = float(torch.cuda.memory_allocated(dev))
             reserved = float(torch.cuda.memory_reserved(dev))
-            util = 100.0 * (reserved / max(total, 1.0))
-            return f' | gpu_mem={reserved / (1024 ** 3):.1f}/{total / (1024 ** 3):.1f}GB ({util:.0f}%)'
+            util_alloc = 100.0 * (alloc / max(total, 1.0))
+            util_reserved = 100.0 * (reserved / max(total, 1.0))
+            return (
+                f' | gpu_alloc={alloc / (1024 ** 3):.1f}/{total / (1024 ** 3):.1f}GB ({util_alloc:.0f}%)'
+                f' | gpu_reserved={reserved / (1024 ** 3):.1f}/{total / (1024 ** 3):.1f}GB ({util_reserved:.0f}%)'
+            )
         except Exception:
             return ''
 

@@ -3,6 +3,10 @@ import threading
 
 from mmengine.hooks import Hook
 from mmengine.registry import HOOKS
+try:
+    import torch
+except Exception:  # pragma: no cover
+    torch = None
 
 
 @HOOKS.register_module()
@@ -44,6 +48,18 @@ class DeepRoofProgressHook(Hook):
     def _emit(self, msg: str):
         print(msg, flush=self.flush)
 
+    def _gpu_mem_str(self) -> str:
+        if torch is None or (not torch.cuda.is_available()):
+            return ''
+        try:
+            dev = torch.cuda.current_device()
+            total = float(torch.cuda.get_device_properties(dev).total_memory)
+            reserved = float(torch.cuda.memory_reserved(dev))
+            util = 100.0 * (reserved / max(total, 1.0))
+            return f' | gpu_mem={reserved / (1024 ** 3):.1f}/{total / (1024 ** 3):.1f}GB ({util:.0f}%)'
+        except Exception:
+            return ''
+
     def _format_lr(self, runner) -> str:
         try:
             lr_obj = runner.optim_wrapper.get_lr()
@@ -80,6 +96,7 @@ class DeepRoofProgressHook(Hook):
                 self._emit(
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
                     f'elapsed={elapsed:.1f}s | running_train_step=1 | step_elapsed={iter_elapsed:.1f}s'
+                    f'{self._gpu_mem_str()}'
                 )
                 if (not self._iter_warned) and cur == 0 and iter_elapsed >= float(self.dataloader_warn_sec):
                     self._emit(
@@ -92,6 +109,7 @@ class DeepRoofProgressHook(Hook):
                 self._emit(
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
                     f'elapsed={elapsed:.1f}s | waiting_next_batch=1'
+                    f'{self._gpu_mem_str()}'
                 )
                 if ((not self._dataloader_warned)
                         and (not self._ever_seen_before_train_iter)
@@ -107,6 +125,7 @@ class DeepRoofProgressHook(Hook):
                 self._emit(
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
                     f'elapsed={elapsed:.1f}s | lr={self._format_lr(runner)}'
+                    f'{self._gpu_mem_str()}'
                 )
                 self._last_iter_seen = cur
 
@@ -149,6 +168,7 @@ class DeepRoofProgressHook(Hook):
         elapsed = 0.0 if self._start_time is None else (time.time() - self._start_time)
         msg = f'[DeepRoofProgress] iter={cur_iter}/{self._max_iters(runner)} | elapsed={elapsed:.1f}s'
         msg += f' | lr={self._format_lr(runner)}'
+        msg += self._gpu_mem_str()
         if isinstance(outputs, dict) and 'loss' in outputs:
             try:
                 loss_val = float(outputs['loss'])

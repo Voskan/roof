@@ -1,5 +1,6 @@
 import time
 import threading
+from collections import OrderedDict
 
 from mmengine.hooks import Hook
 from mmengine.registry import HOOKS
@@ -37,6 +38,8 @@ class DeepRoofProgressHook(Hook):
         self._active_iter = -1
         self._iter_start_time = None
         self._iter_warned = False
+        self._last_losses = OrderedDict()
+        self._last_loss_iter = -1
 
     @staticmethod
     def _max_iters(runner) -> int:
@@ -102,6 +105,7 @@ class DeepRoofProgressHook(Hook):
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
                     f'elapsed={elapsed:.1f}s | running_train_step=1 | step_elapsed={iter_elapsed:.1f}s'
                     f'{self._gpu_mem_str()}'
+                    f'{self._format_last_losses()}'
                 )
                 if (not self._iter_warned) and cur == 0 and iter_elapsed >= float(self.dataloader_warn_sec):
                     self._emit(
@@ -115,6 +119,7 @@ class DeepRoofProgressHook(Hook):
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
                     f'elapsed={elapsed:.1f}s | waiting_next_batch=1'
                     f'{self._gpu_mem_str()}'
+                    f'{self._format_last_losses()}'
                 )
                 if ((not self._dataloader_warned)
                         and (not self._ever_seen_before_train_iter)
@@ -131,8 +136,47 @@ class DeepRoofProgressHook(Hook):
                     f'[DeepRoofProgress] alive | iter={cur}/{max_iters} | '
                     f'elapsed={elapsed:.1f}s | lr={self._format_lr(runner)}'
                     f'{self._gpu_mem_str()}'
+                    f'{self._format_last_losses()}'
                 )
                 self._last_iter_seen = cur
+
+    @staticmethod
+    def _to_float(val):
+        try:
+            return float(val)
+        except Exception:
+            return None
+
+    def _capture_losses_from_outputs(self, outputs):
+        if not isinstance(outputs, dict):
+            return
+        captured = OrderedDict()
+        for key, val in outputs.items():
+            if 'loss' not in str(key):
+                continue
+            fv = self._to_float(val)
+            if fv is None:
+                continue
+            captured[str(key)] = fv
+        if captured:
+            self._last_losses = captured
+
+    def _format_last_losses(self) -> str:
+        if not self._last_losses:
+            return ''
+        # Compact, stable subset for heartbeat readability.
+        preferred = ['loss', 'loss_cls', 'loss_mask', 'loss_dice', 'loss_geometry']
+        parts = []
+        for key in preferred:
+            if key in self._last_losses:
+                parts.append(f'{key}={self._last_losses[key]:.4f}')
+        if not parts:
+            # Fallback to first 5 available loss keys
+            for key, val in list(self._last_losses.items())[:5]:
+                parts.append(f'{key}={val:.4f}')
+        if not parts:
+            return ''
+        return ' | ' + ' | '.join(parts)
 
     def before_train(self, runner):
         self._start_time = time.time()
@@ -156,6 +200,8 @@ class DeepRoofProgressHook(Hook):
         self._active_iter = -1
         self._iter_start_time = None
         self._iter_warned = False
+        self._last_losses = OrderedDict()
+        self._last_loss_iter = -1
 
     def before_train_iter(self, runner, batch_idx: int, data_batch=None):
         self._ever_seen_before_train_iter = True
@@ -168,18 +214,15 @@ class DeepRoofProgressHook(Hook):
         self._active_iter = -1
         self._iter_start_time = None
         cur_iter = int(batch_idx) + 1
+        self._capture_losses_from_outputs(outputs)
+        self._last_loss_iter = cur_iter
         if cur_iter != 1 and (cur_iter % self.interval) != 0:
             return
         elapsed = 0.0 if self._start_time is None else (time.time() - self._start_time)
         msg = f'[DeepRoofProgress] iter={cur_iter}/{self._max_iters(runner)} | elapsed={elapsed:.1f}s'
         msg += f' | lr={self._format_lr(runner)}'
         msg += self._gpu_mem_str()
-        if isinstance(outputs, dict) and 'loss' in outputs:
-            try:
-                loss_val = float(outputs['loss'])
-                msg += f' | loss={loss_val:.4f}'
-            except Exception:
-                pass
+        msg += self._format_last_losses()
         self._emit(msg)
         self._last_iter_seen = cur_iter
 

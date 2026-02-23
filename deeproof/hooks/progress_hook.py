@@ -22,11 +22,15 @@ class DeepRoofProgressHook(Hook):
         flush: bool = True,
         heartbeat_sec: int = 30,
         dataloader_warn_sec: int = 90,
+        mask_loss_zero_warn_after: int = 3,
+        debug_loss_window_iters: int = 5,
     ):
         self.interval = max(int(interval), 1)
         self.flush = bool(flush)
         self.heartbeat_sec = max(int(heartbeat_sec), 5)
         self.dataloader_warn_sec = max(int(dataloader_warn_sec), 30)
+        self.mask_loss_zero_warn_after = max(int(mask_loss_zero_warn_after), 1)
+        self.debug_loss_window_iters = max(int(debug_loss_window_iters), 0)
         self._start_time = None
         self._stop_event = threading.Event()
         self._heartbeat_thread = None
@@ -40,6 +44,8 @@ class DeepRoofProgressHook(Hook):
         self._iter_warned = False
         self._last_losses = OrderedDict()
         self._last_loss_iter = -1
+        self._mask_loss_zero_streak = 0
+        self._mask_loss_zero_warned = False
 
     @staticmethod
     def _max_iters(runner) -> int:
@@ -161,6 +167,38 @@ class DeepRoofProgressHook(Hook):
         if captured:
             self._last_losses = captured
 
+    def _update_mask_loss_health(self, cur_iter: int):
+        mask_vals = []
+        for key, val in self._last_losses.items():
+            if 'loss_mask' in key:
+                mask_vals.append(float(val))
+        if not mask_vals:
+            return
+        all_zero = all(abs(v) <= 0.0 for v in mask_vals)
+        if all_zero:
+            self._mask_loss_zero_streak += 1
+        else:
+            self._mask_loss_zero_streak = 0
+            self._mask_loss_zero_warned = False
+
+        if (
+            self._mask_loss_zero_streak >= self.mask_loss_zero_warn_after
+            and not self._mask_loss_zero_warned
+        ):
+            self._emit(
+                '[DeepRoofProgress] WARNING: mask losses are exactly zero for multiple iterations. '
+                'Likely stale loss code in memory or mask-loss target/normalization issue. '
+                'Restart kernel and rerun all cells to load latest deeproof/models/losses.py.'
+            )
+            self._mask_loss_zero_warned = True
+
+        if cur_iter <= self.debug_loss_window_iters:
+            dbg = ', '.join(
+                f'{k}={float(v):.8e}' for k, v in self._last_losses.items() if 'loss' in k
+            )
+            if dbg:
+                self._emit(f'[DeepRoofProgress][debug] iter={cur_iter} losses: {dbg}')
+
     def _format_last_losses(self) -> str:
         if not self._last_losses:
             return ''
@@ -209,6 +247,8 @@ class DeepRoofProgressHook(Hook):
         self._iter_warned = False
         self._last_losses = OrderedDict()
         self._last_loss_iter = -1
+        self._mask_loss_zero_streak = 0
+        self._mask_loss_zero_warned = False
 
     def before_train_iter(self, runner, batch_idx: int, data_batch=None):
         self._ever_seen_before_train_iter = True
@@ -223,6 +263,7 @@ class DeepRoofProgressHook(Hook):
         cur_iter = int(batch_idx) + 1
         self._capture_losses_from_outputs(outputs)
         self._last_loss_iter = cur_iter
+        self._update_mask_loss_health(cur_iter)
         if cur_iter != 1 and (cur_iter % self.interval) != 0:
             return
         elapsed = 0.0 if self._start_time is None else (time.time() - self._start_time)

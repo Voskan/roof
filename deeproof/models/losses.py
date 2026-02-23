@@ -186,12 +186,15 @@ class HybridMaskLoss(nn.Module):
         lovasz_weight: float = 1.0,
         reduction: str = 'mean',
         loss_weight: float = 1.0,
+        debug_first_n_calls: int = 8,
     ):
         super().__init__()
         self.bce_weight = float(bce_weight)
         self.lovasz_weight = float(lovasz_weight)
         self.reduction = reduction
         self.loss_weight = float(loss_weight)
+        self.debug_first_n_calls = max(int(debug_first_n_calls), 0)
+        self._debug_call_idx = 0
 
     def forward(
         self,
@@ -205,6 +208,7 @@ class HybridMaskLoss(nn.Module):
         reduction = reduction_override if reduction_override is not None else self.reduction
         if reduction not in ('none', 'mean', 'sum'):
             raise ValueError(f'Invalid reduction_override={reduction_override}')
+        self._debug_call_idx += 1
 
         if target.shape != pred.shape:
             target = target.reshape_as(pred)
@@ -221,6 +225,21 @@ class HybridMaskLoss(nn.Module):
             lovasz_vals.append(_lovasz_hinge_flat(pred_flat[i], target_flat[i]))
         lovasz = torch.stack(lovasz_vals) if lovasz_vals else pred.sum() * 0.0
 
+        if self._debug_call_idx <= self.debug_first_n_calls:
+            try:
+                bce_mean = float(bce.mean().detach().item()) if bce.numel() > 0 else 0.0
+                lovasz_mean = float(lovasz.mean().detach().item()) if lovasz.numel() > 0 else 0.0
+                print(
+                    '[DeepRoofHybridMaskLoss][debug] '
+                    f'call={self._debug_call_idx} '
+                    f'pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)} '
+                    f'numel={int(pred.numel())} reduction={reduction} '
+                    f'avg_factor={avg_factor} '
+                    f'bce_mean={bce_mean:.8e} lovasz_mean={lovasz_mean:.8e}',
+                    flush=True)
+            except Exception:
+                pass
+
         if reduction == 'none':
             # Broadcast per-mask Lovasz term to per-point shape for compatible output.
             lovasz_view = lovasz
@@ -236,20 +255,56 @@ class HybridMaskLoss(nn.Module):
                 loss = loss * weight
             return loss * self.loss_weight
 
-        # BCE normalization follows the external avg_factor contract directly.
-        bce_term = _weight_reduce_loss(
-            bce, weight=weight, reduction=reduction, avg_factor=avg_factor)
+        # NOTE:
+        # Some runtime stacks pass `avg_factor` already multiplied by sampled
+        # points for Mask2Former. Combined with custom point-wise reductions this
+        # can over-attenuate mask loss to exact zero in logs. For robustness we
+        # use an intrinsic reduction here (independent of external avg_factor).
+        bce_val = bce
+        lovasz_val = lovasz
+        if weight is not None:
+            if not torch.is_tensor(weight):
+                weight = torch.tensor(weight, dtype=bce.dtype, device=bce.device)
+            weight = weight.to(device=bce.device, dtype=bce.dtype)
 
-        # Lovasz is per-mask; when avg_factor includes num_points, compensate so
-        # Lovasz is normalized per mask (not over-attenuated to near-zero).
-        lovasz_avg_factor = avg_factor
-        if reduction == 'mean' and avg_factor is not None:
-            num_points = int(pred_flat.shape[1]) if pred_flat.ndim == 2 else 1
-            lovasz_avg_factor = float(avg_factor) / max(float(num_points), 1.0)
-        lovasz_term = _weight_reduce_loss(
-            lovasz, weight=weight, reduction=reduction, avg_factor=lovasz_avg_factor)
+            # Apply per-sample weights to BCE [N, P] / [N]
+            wb = weight
+            while wb.ndim < bce_val.ndim:
+                wb = wb.unsqueeze(-1)
+            bce_val = bce_val * wb
+
+            # Apply per-sample weights to Lovasz [N]
+            wl = weight
+            while wl.ndim > 1:
+                wl = wl.squeeze(-1)
+            if wl.ndim == 0:
+                wl = wl.unsqueeze(0)
+            if lovasz_val.ndim > 1:
+                lovasz_val = lovasz_val.reshape(lovasz_val.shape[0], -1).mean(dim=1)
+            if wl.shape[0] == lovasz_val.shape[0]:
+                lovasz_val = lovasz_val * wl
+
+        if reduction == 'mean':
+            bce_term = bce_val.mean() if bce_val.numel() > 0 else pred.sum() * 0.0
+            lovasz_term = lovasz_val.mean() if lovasz_val.numel() > 0 else pred.sum() * 0.0
+        elif reduction == 'sum':
+            bce_term = bce_val.sum()
+            lovasz_term = lovasz_val.sum()
+        else:
+            raise ValueError(f'Unsupported reduction={reduction}')
 
         loss = self.bce_weight * bce_term + self.lovasz_weight * lovasz_term
+        if self._debug_call_idx <= self.debug_first_n_calls:
+            try:
+                print(
+                    '[DeepRoofHybridMaskLoss][debug] '
+                    f'call={self._debug_call_idx} '
+                    f'bce_term={float(bce_term):.8e} '
+                    f'lovasz_term={float(lovasz_term):.8e} '
+                    f'final={float(loss * self.loss_weight):.8e}',
+                    flush=True)
+            except Exception:
+                pass
         return loss * self.loss_weight
 
 

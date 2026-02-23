@@ -164,16 +164,23 @@ class DeepRoofProgressHook(Hook):
     def _format_last_losses(self) -> str:
         if not self._last_losses:
             return ''
+        def _fmt(v: float) -> str:
+            av = abs(float(v))
+            if av == 0.0:
+                return '0'
+            if av < 1e-3:
+                return f'{float(v):.3e}'
+            return f'{float(v):.4f}'
         # Compact, stable subset for heartbeat readability.
         preferred = ['loss', 'loss_cls', 'loss_mask', 'loss_dice', 'loss_geometry']
         parts = []
         for key in preferred:
             if key in self._last_losses:
-                parts.append(f'{key}={self._last_losses[key]:.4f}')
+                parts.append(f'{key}={_fmt(self._last_losses[key])}')
         if not parts:
             # Fallback to first 5 available loss keys
             for key, val in list(self._last_losses.items())[:5]:
-                parts.append(f'{key}={val:.4f}')
+                parts.append(f'{key}={_fmt(val)}')
         if not parts:
             return ''
         return ' | ' + ' | '.join(parts)

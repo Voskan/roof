@@ -218,8 +218,20 @@ class HybridMaskLoss(nn.Module):
         # correctly normalizes by (num_masks * num_points) exactly once.
         bce = F.binary_cross_entropy_with_logits(pred, target, reduction='none')
 
-        pred_flat = pred.reshape(pred.shape[0], -1)
-        target_flat = target.reshape(target.shape[0], -1)
+        # Mask2Former may pass sampled mask logits as a single flattened 1D tensor
+        # [num_masks * num_points]. Treat that as one sample, not N scalar samples.
+        if pred.ndim == 0:
+            pred_flat = pred.reshape(1, 1)
+            target_flat = target.reshape(1, 1)
+        elif pred.ndim == 1:
+            pred_flat = pred.unsqueeze(0)
+            target_flat = target.unsqueeze(0)
+        elif pred.ndim == 2:
+            pred_flat = pred
+            target_flat = target
+        else:
+            pred_flat = pred.reshape(pred.shape[0], -1)
+            target_flat = target.reshape(target.shape[0], -1)
         lovasz_vals = []
         for i in range(pred_flat.shape[0]):
             lovasz_vals.append(_lovasz_hinge_flat(pred_flat[i], target_flat[i]))

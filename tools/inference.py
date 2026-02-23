@@ -419,12 +419,36 @@ def run_production_inference():
     _set_global_seed(seed=int(args.seed), deterministic=bool(args.deterministic))
 
     logger.info('Loading model state from %s...', args.checkpoint)
+    def _is_cuda_oom(exc: Exception, device: str) -> bool:
+        if not str(device).startswith('cuda'):
+            return False
+        msg = str(exc).lower()
+        return ('out of memory' in msg) or ('cuda error: out of memory' in msg)
+
     try:
         model = init_model(args.config, args.checkpoint, device=args.device)
         model.eval()
     except Exception as e:
-        logger.error('Failed to initialize model: %s', e)
-        sys.exit(1)
+        if bool(args.oom_fallback_cpu) and _is_cuda_oom(e, str(args.device)):
+            logger.warning(
+                'Model init on %s failed with CUDA OOM. Retrying init on CPU...',
+                args.device)
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                args.device = 'cpu'
+                model = init_model(args.config, args.checkpoint, device='cpu')
+                model.eval()
+                logger.warning('CPU fallback active for inference session.')
+            except Exception as cpu_e:
+                logger.error('Failed to initialize model on CPU after CUDA OOM: %s', cpu_e)
+                sys.exit(1)
+        else:
+            logger.error('Failed to initialize model: %s', e)
+            sys.exit(1)
 
     candidate_paths = _load_candidate_paths(args)
     if len(candidate_paths) == 1:

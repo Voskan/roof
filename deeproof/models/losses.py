@@ -210,9 +210,9 @@ class HybridMaskLoss(nn.Module):
             target = target.reshape_as(pred)
         target = target.float()
 
+        # Keep per-point BCE values so external `avg_factor` (from Mask2Former)
+        # correctly normalizes by (num_masks * num_points) exactly once.
         bce = F.binary_cross_entropy_with_logits(pred, target, reduction='none')
-        if bce.ndim > 1:
-            bce = bce.mean(dim=tuple(range(1, bce.ndim)))
 
         pred_flat = pred.reshape(pred.shape[0], -1)
         target_flat = target.reshape(target.shape[0], -1)
@@ -221,8 +221,35 @@ class HybridMaskLoss(nn.Module):
             lovasz_vals.append(_lovasz_hinge_flat(pred_flat[i], target_flat[i]))
         lovasz = torch.stack(lovasz_vals) if lovasz_vals else pred.sum() * 0.0
 
-        loss = self.bce_weight * bce + self.lovasz_weight * lovasz
-        loss = _weight_reduce_loss(loss, weight=weight, reduction=reduction, avg_factor=avg_factor)
+        if reduction == 'none':
+            # Broadcast per-mask Lovasz term to per-point shape for compatible output.
+            lovasz_view = lovasz
+            while lovasz_view.ndim < bce.ndim:
+                lovasz_view = lovasz_view.unsqueeze(-1)
+            loss = self.bce_weight * bce + self.lovasz_weight * lovasz_view
+            if weight is not None:
+                if not torch.is_tensor(weight):
+                    weight = torch.tensor(weight, dtype=loss.dtype, device=loss.device)
+                weight = weight.to(device=loss.device, dtype=loss.dtype)
+                while weight.ndim < loss.ndim:
+                    weight = weight.unsqueeze(-1)
+                loss = loss * weight
+            return loss * self.loss_weight
+
+        # BCE normalization follows the external avg_factor contract directly.
+        bce_term = _weight_reduce_loss(
+            bce, weight=weight, reduction=reduction, avg_factor=avg_factor)
+
+        # Lovasz is per-mask; when avg_factor includes num_points, compensate so
+        # Lovasz is normalized per mask (not over-attenuated to near-zero).
+        lovasz_avg_factor = avg_factor
+        if reduction == 'mean' and avg_factor is not None:
+            num_points = int(pred_flat.shape[1]) if pred_flat.ndim == 2 else 1
+            lovasz_avg_factor = float(avg_factor) / max(float(num_points), 1.0)
+        lovasz_term = _weight_reduce_loss(
+            lovasz, weight=weight, reduction=reduction, avg_factor=lovasz_avg_factor)
+
+        loss = self.bce_weight * bce_term + self.lovasz_weight * lovasz_term
         return loss * self.loss_weight
 
 

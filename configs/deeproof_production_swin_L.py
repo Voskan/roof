@@ -22,7 +22,7 @@ custom_imports = dict(
     allow_failed_imports=False)
 
 # 1. Shared Model Settings
-num_classes = 3
+num_classes = 5 # Unified 5-Class Layout Engine (0: BG, 1: Flat, 2: Sloped, 3: Panel, 4: Obstacle)
 data_preprocessor = dict(
     type='SegDataPreProcessor',
     mean=[123.675, 116.28, 103.53],
@@ -30,7 +30,7 @@ data_preprocessor = dict(
     bgr_to_rgb=True,
     size_divisor=32,
     pad_val=0,
-    seg_pad_val=255,
+    seg_pad_val=255, # 255 is ignore_index
     test_cfg=dict(size_divisor=32))
 
 # 1. Model Configuration
@@ -145,9 +145,9 @@ model = dict(
             use_sigmoid=False,
             loss_weight=2.0,
             reduction='mean',
-            # bg=1, flat=1, sloped=10, no_obj=0.1
-            # FIX: Increased sloped weight from 3->10 to combat extreme class imbalance.
-            class_weight=[1.0, 1.0, 10.0, 0.1]),
+            # Unified 5-class handling: severe imbalance towards small obstacles/panels.
+            # bg=1, flat=1, sloped=6, panel=10, obstacle=10, no_obj=0.1
+            class_weight=[1.0, 1.0, 6.0, 30.0, 30.0, 0.1]),
         loss_mask=dict(
             type='DeepRoofHybridMaskLoss',
             bce_weight=1.0,
@@ -184,7 +184,7 @@ model = dict(
 
 # 2. Data Pipeline & Dataloader
 dataset_type = 'DeepRoofDataset'
-data_root = 'data/OmniCity/'
+data_root = 'data/MassiveMasterDataset/'
 
 # DeepRoofDataset handles loading and augmentation in its custom __getitem__.
 train_pipeline = []
@@ -281,9 +281,9 @@ optimizer = dict(
 optim_wrapper = dict(
     type='OptimWrapper',
     optimizer=optimizer,
-    # FIX Bug #1 (production): max_norm=1.0 is the standard for Mask2Former.
-    # 0.01 was 100x too aggressive — clipped geometry gradients to near-zero.
-    clip_grad=dict(max_norm=1.0, norm_type=2),
+    # FIX Bug #1 (production): max_norm=0.01 is the standard for Mask2Former.
+    # 1.0 allows gradients to explode during bipartite matching.
+    clip_grad=dict(max_norm=0.01, norm_type=2),
     paramwise_cfg=dict(
         custom_keys={
             'backbone': dict(lr_mult=0.1, decay_mult=1.0)

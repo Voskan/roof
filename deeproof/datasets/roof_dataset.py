@@ -23,8 +23,8 @@ class DeepRoofDataset(BaseSegDataset):
         - gt_normals: Dense normal map (3, H, W)
     """
     METAINFO = dict(
-        classes=('background', 'flat_roof', 'sloped_roof'),
-        palette=[[0, 0, 0], [0, 255, 0], [255, 0, 0]]
+        classes=('background', 'flat_roof', 'sloped_roof', 'solar_panel', 'roof_obstacle'),
+        palette=[[0, 0, 0], [0, 255, 0], [255, 0, 0], [0, 0, 255], [255, 255, 0]]
     )
 
     def __init__(self,
@@ -147,17 +147,29 @@ class DeepRoofDataset(BaseSegDataset):
                 normals = (normals_vis.astype(np.float32) / 255.0) * 2.0 - 1.0
                 normals = normals[:, :, ::-1]  # BGR to RGB (XYZ)
 
-        # 4. Generate Semantic Labels on-the-fly
-        # Flat if slope < 5 degrees. Slope = arccos(nz)
-        nz = np.clip(normals[:, :, 2], -1.0, 1.0)
-        slope_rad = np.arccos(nz)
-        slope_deg = np.degrees(slope_rad)
-        
-        semantic_mask = np.zeros_like(instance_mask, dtype=np.uint8)
-        is_roof = instance_mask > 0
-        thresh = float(getattr(self, 'slope_threshold_deg', 2.0))
-        semantic_mask[(slope_deg < thresh) & is_roof] = 1
-        semantic_mask[(slope_deg >= thresh) & is_roof] = 2
+        # 4. Handle unified semantic labels
+        # The unified layout pipeline encodes multiple classes (1: Flat, 2: Sloped, 3: Panel, 4: Obstacle).
+        # We only override with geometry-based (slope) logic if the mask is purely binary (legacy 0/1 data).
+        unique_vals = np.unique(instance_mask)
+        if len(unique_vals) <= 2 and unique_vals.max() <= 1:
+            # Legacy binary mode
+            nz = np.clip(normals[:, :, 2], -1.0, 1.0)
+            slope_rad = np.arccos(nz)
+            slope_deg = np.degrees(slope_rad)
+            
+            semantic_mask = np.zeros_like(instance_mask, dtype=np.uint8)
+            is_roof = instance_mask > 0
+            thresh = float(getattr(self, 'slope_threshold_deg', 2.0))
+            semantic_mask[(slope_deg < thresh) & is_roof] = 1
+            semantic_mask[(slope_deg >= thresh) & is_roof] = 2
+        else:
+            # Unified 5-class mode natively holds semantic IDs in the loaded mask directly
+            semantic_mask = instance_mask.copy().astype(np.uint8)
+            # We reconstruct instance masks via connected components to differentiate multiple panels/roofs
+            # Note: For strict Mask2Former compliance, instances must be strictly 1..N continuous.
+            inst_bg = (semantic_mask == 0)
+            _, instance_mask = cv2.connectedComponents(semantic_mask)
+            instance_mask[inst_bg] = 0
 
         # Optional SAM teacher mask for distillation
         sam_mask = None
@@ -212,24 +224,44 @@ class DeepRoofDataset(BaseSegDataset):
             normal_np = _to_numpy(normals)
             inst_np = _to_numpy(instance_mask)
 
-            if img_np.shape[:2] != (target_h, target_w):
-                img_np = cv2.resize(img_np, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-            if sem_np.shape[:2] != (target_h, target_w):
-                sem_np = cv2.resize(sem_np, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
-            if inst_np.shape[:2] != (target_h, target_w):
-                inst_dtype = inst_np.dtype
-                inst_np = cv2.resize(inst_np.astype(np.int32), (target_w, target_h), interpolation=cv2.INTER_NEAREST)
-                inst_np = inst_np.astype(inst_dtype)
-            if normal_np.shape[:2] != (target_h, target_w):
-                normal_np = cv2.resize(normal_np, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-            if sam_mask is not None and sam_mask.shape[:2] != (target_h, target_w):
-                sam_mask = cv2.resize(sam_mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+            # Keep Aspect Ratio Resize + Pad (Fixes distortion Bug #3)
+            h, w = img_np.shape[:2]
+            scale = min(target_w / w, target_h / h)
+            new_w, new_h = int(w * scale), int(h * scale)
+
+            pad_h = target_h - new_h
+            pad_w = target_w - new_w
+            top_pad, bottom_pad = pad_h // 2, pad_h - pad_h // 2
+            left_pad, right_pad = pad_w // 2, pad_w - pad_w // 2
+
+            def _resize_and_pad(arr, inter, rgb_pad_val=0):
+                if (new_h, new_w) != (h, w):
+                    arr = cv2.resize(arr, (new_w, new_h), interpolation=inter)
+                if arr.ndim == 3:
+                    return cv2.copyMakeBorder(arr, top_pad, bottom_pad, left_pad, right_pad, cv2.BORDER_CONSTANT, value=[rgb_pad_val]*arr.shape[2])
+                else:
+                    return cv2.copyMakeBorder(arr, top_pad, bottom_pad, left_pad, right_pad, cv2.BORDER_CONSTANT, value=rgb_pad_val)
+
+            img_np = _resize_and_pad(img_np, cv2.INTER_LINEAR, rgb_pad_val=0)
+            sem_np = _resize_and_pad(sem_np, cv2.INTER_NEAREST, rgb_pad_val=0)
+            
+            inst_dtype = inst_np.dtype
+            inst_np = _resize_and_pad(inst_np.astype(np.int32), cv2.INTER_NEAREST, rgb_pad_val=0).astype(inst_dtype)
+            
+            normal_np = _resize_and_pad(normal_np, cv2.INTER_LINEAR, rgb_pad_val=0)
+            
+            if sam_mask is not None:
+                sam_mask = _resize_and_pad(sam_mask, cv2.INTER_NEAREST, rgb_pad_val=0)
 
             # Re-normalize normal vectors after interpolation.
             if normal_np.ndim == 3 and normal_np.shape[2] == 3:
                 nrm = np.linalg.norm(normal_np, axis=2, keepdims=True)
                 valid = nrm > 1e-6
                 normal_np = np.where(valid, normal_np / np.clip(nrm, 1e-6, None), normal_np)
+                
+                # Ensure 0-padded invalid edge/background regions point strictly UP
+                val_flat = valid.squeeze(-1)
+                normal_np[~val_flat] = [0.0, 0.0, 1.0]
 
             img = img_np
             semantic_mask = sem_np

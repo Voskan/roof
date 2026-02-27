@@ -32,8 +32,7 @@ runs/
 *.json
 !docs/source_of_truth.json
 
-# Data
-data/
+Data
 *.npy
 *.npz
 *.pkl
